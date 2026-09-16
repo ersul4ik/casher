@@ -53,7 +53,9 @@ async def _set_webhook_with_retries(bot: Bot, dp: Dispatcher, config: Config) ->
             await bot.set_webhook(
                 config.webhook_url,
                 secret_token=config.webhook_secret,
-                drop_pending_updates=True,
+                # Не выбрасываем накопленное: бесплатный инстанс засыпает и передеплоивается,
+                # и нажатия, пришедшие в этот момент, иначе теряются молча.
+                drop_pending_updates=False,
                 allowed_updates=dp.resolve_used_update_types(),
             )
             return
