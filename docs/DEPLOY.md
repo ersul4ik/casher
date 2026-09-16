@@ -83,7 +83,7 @@ git push
 
    | Поле | Значение |
    |---|---|
-   | Name | `casher-bot` (от него зависит адрес `https://casher-bot.onrender.com`) |
+   | Name | `casher` — от него зависит адрес сервиса |
    | Region | Frankfurt |
    | Branch | `main` |
    | Runtime / Language | Python 3 |
@@ -97,7 +97,7 @@ git push
    |---|---|---|
    | `BOT_TOKEN` | `8123456789:AAH...` | шаг 1 |
    | `DATABASE_URL` | `postgresql://...neon.tech/neondb?sslmode=require...` | шаг 2 |
-   | `BASE_URL` | `https://casher-bot.onrender.com` | имя сервиса из пункта 3 |
+   | `BASE_URL` | `https://casher-arx3.onrender.com` | имя сервиса из пункта 3 |
    | `WEBHOOK_SECRET` | длинная случайная строка | `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` |
    | `ADMIN_IDS` | твой Telegram id | узнать у [@userinfobot](https://t.me/userinfobot) |
    | `DEFAULT_CURRENCY` | `KGS` | |
@@ -111,12 +111,14 @@ git push
    ```
    База готова
    HTTP слушает порт 10000, приём трат на POST /spend
-   Вебхук Телеграма: https://casher-bot.onrender.com/tg/...
+   Вебхук Телеграма: https://casher-arx3.onrender.com/tg/...
    ```
 
-`BASE_URL` должен совпадать с реальным адресом сервиса (виден вверху страницы сервиса). Если
-Render выдал адрес с суффиксом вида `casher-bot-a1b2.onrender.com`, поправь переменную и нажми
-**Manual Deploy → Deploy latest commit**.
+`BASE_URL` должен совпадать с реальным адресом сервиса — он написан вверху страницы сервиса.
+Render почти всегда добавляет к имени случайный суффикс: в этом развёртывании получилось
+`https://casher-arx3.onrender.com`. Если значение переменной разошлось с фактическим адресом,
+поправь её и нажми **Manual Deploy → Deploy latest commit**: иначе бот пропишет вебхук на
+несуществующий домен и будет молчать, хотя `/health` продолжит отвечать `ok`.
 
 > Вместо ручного заполнения можно использовать **New + → Blueprint**: в репозитории лежит
 > `render.yaml`, Render подхватит настройки и спросит только секреты.
@@ -133,7 +135,7 @@ Render выдал адрес с суффиксом вида `casher-bot-a1b2.onr
 5. Проверить приём пушей (токен взять из `/token`):
 
 ```bash
-curl -X POST https://casher-bot.onrender.com/spend \
+curl -X POST https://casher-arx3.onrender.com/spend \
   -H "X-Token: <твой токен>" \
   -H "Content-Type: application/json" \
   -d '{"raw": "Успещная операция по QR. Сумма: 1470.00 KGS"}'
@@ -152,7 +154,7 @@ Free-сервис Render засыпает после 15 минут без зап
 1. [cron-job.org](https://cron-job.org) → регистрация (бесплатно, без карты).
 2. **Create cronjob**:
    - Title: `casher keep-alive`
-   - URL: `https://casher-bot.onrender.com/health`
+   - URL: `https://casher-arx3.onrender.com/health`
    - Schedule: **Every 10 minutes**
 3. Save. На вкладке History должны идти ответы `200`.
 
