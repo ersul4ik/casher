@@ -134,6 +134,18 @@ def _delta_line(current: Decimal, previous: Decimal) -> str | None:
     return f"Прошлый период: {money(previous)} {arrow} {abs(change):.0f}%"
 
 
+def _group_by_currency(rows: list[asyncpg.Record]) -> dict[str, list[asyncpg.Record]]:
+    grouped: dict[str, list[asyncpg.Record]] = {}
+    for row in rows:
+        grouped.setdefault(row["currency"], []).append(row)
+    return grouped
+
+
+def _currencies_by_turnover(grouped: dict[str, list[asyncpg.Record]]) -> list[str]:
+    """Ordered by turnover, so the user's main currency comes first."""
+    return sorted(grouped, key=lambda cur: sum(r["total"] for r in grouped[cur]), reverse=True)
+
+
 async def build_report(
     pool: asyncpg.Pool, user: asyncpg.Record, kind: str, offset: int
 ) -> str:
@@ -146,21 +158,14 @@ async def build_report(
         lines.append("")
         lines.append("Трат за этот период нет.")
     else:
-        by_currency: dict[str, list[asyncpg.Record]] = {}
-        for row in rows:
-            by_currency.setdefault(row["currency"], []).append(row)
+        by_currency = _group_by_currency(rows)
 
         prev_period = resolve_period(kind, offset + 1, user["tz_minutes"])
         prev_totals = await db.totals_by_currency(
             pool, user["id"], prev_period.start, prev_period.end
         )
 
-        # Currencies ordered by turnover, so the main one comes first.
-        order = sorted(
-            by_currency,
-            key=lambda cur: sum(r["total"] for r in by_currency[cur]),
-            reverse=True,
-        )
+        order = _currencies_by_turnover(by_currency)
         for currency in order:
             group = by_currency[currency]
             total = sum(r["total"] for r in group)
@@ -186,4 +191,42 @@ async def build_report(
     if pending:
         lines.append("")
         lines.append(f"⏳ Без категории: {pending} — разметить: /pending")
+    return "\n".join(lines)
+
+
+async def build_tag_report(
+    pool: asyncpg.Pool, user: asyncpg.Record, kind: str, offset: int
+) -> str:
+    """Same period, but broken down by tag instead of category."""
+    period = resolve_period(kind, offset, user["tz_minutes"])
+    rows = await db.report_by_tag(pool, user["id"], period.start, period.end)
+    lines = [f"🏷 <b>{html.escape(period_title(period))}</b> — по тегам"]
+
+    if not rows:
+        lines += [
+            "",
+            "За этот период ничего не отмечено тегами.",
+            "",
+            "Теги ставятся под тратой кнопкой «🏷 Теги» — например, "
+            "<i>вода</i>, <i>кофе</i>, <i>курут</i>.",
+        ]
+    else:
+        by_currency = _group_by_currency(rows)
+        for currency in _currencies_by_turnover(by_currency):
+            group = by_currency[currency]
+            lines.append("")
+            if len(by_currency) > 1:
+                lines.append(f"<b>— {html.escape(currency)} —</b>")
+            for row in group:
+                lines.append(
+                    f"{html.escape(row['tag'])} — <b>{money(row['total'])}</b> ({row['n']} шт)"
+                )
+
+    untagged = await db.count_untagged(pool, user["id"], period.start, period.end)
+    if untagged:
+        lines.append("")
+        lines.append(f"Без тегов: {untagged} трат")
+    if rows:
+        lines.append("")
+        lines.append("<i>Трата с несколькими тегами считается в каждом из них.</i>")
     return "\n".join(lines)

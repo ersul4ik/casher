@@ -53,7 +53,7 @@ class FakeBot:
 class SpendEndpointTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.pool = await db.create_pool(TEST_DSN)
-        await self.pool.execute("DROP TABLE IF EXISTS spends, categories, users CASCADE")
+        await self.pool.execute("DROP TABLE IF EXISTS spend_tags, tags, spends, categories, users CASCADE")
         await db.apply_schema(self.pool)
 
         self.user, _ = await db.get_or_create_user(

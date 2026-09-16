@@ -343,6 +343,118 @@ async def last_spends(pool: asyncpg.Pool, user_id: int, limit: int = 10) -> list
     )
 
 
+async def set_note(
+    pool: asyncpg.Pool, user_id: int, spend_id: int, note: str | None
+) -> asyncpg.Record | None:
+    return await pool.fetchrow(
+        "UPDATE spends SET note = $3 WHERE id = $1 AND user_id = $2 RETURNING *",
+        spend_id,
+        user_id,
+        note,
+    )
+
+
+# --- tags --------------------------------------------------------------------
+
+
+async def list_tags(pool: asyncpg.Pool, user_id: int, limit: int = 12) -> list[asyncpg.Record]:
+    """Most-used tags first, so the handiest ones stay on the first row of buttons."""
+    return await pool.fetch(
+        """
+        SELECT t.id, t.name, count(st.spend_id) AS uses
+          FROM tags t
+          LEFT JOIN spend_tags st ON st.tag_id = t.id
+         WHERE t.user_id = $1
+         GROUP BY t.id
+         ORDER BY uses DESC, t.name
+         LIMIT $2
+        """,
+        user_id,
+        limit,
+    )
+
+
+async def ensure_tag(pool: asyncpg.Pool, user_id: int, name: str) -> asyncpg.Record:
+    return await pool.fetchrow(
+        """
+        INSERT INTO tags (user_id, name) VALUES ($1, $2)
+        ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = tags.name
+        RETURNING id, name
+        """,
+        user_id,
+        name,
+    )
+
+
+async def tags_for_spend(pool: asyncpg.Pool, spend_id: int) -> list[asyncpg.Record]:
+    return await pool.fetch(
+        """
+        SELECT t.id, t.name
+          FROM spend_tags st
+          JOIN tags t ON t.id = st.tag_id
+         WHERE st.spend_id = $1
+         ORDER BY t.name
+        """,
+        spend_id,
+    )
+
+
+async def attach_tag(pool: asyncpg.Pool, user_id: int, spend_id: int, tag_id: int) -> bool:
+    """Attach a tag, refusing quietly if either side belongs to another user."""
+    attached = await pool.fetchval(
+        """
+        INSERT INTO spend_tags (spend_id, tag_id)
+        SELECT s.id, t.id
+          FROM spends s
+          JOIN tags t ON t.user_id = s.user_id
+         WHERE s.id = $1 AND t.id = $2 AND s.user_id = $3
+        ON CONFLICT DO NOTHING
+        RETURNING tag_id
+        """,
+        spend_id,
+        tag_id,
+        user_id,
+    )
+    return attached is not None
+
+
+async def toggle_tag(
+    pool: asyncpg.Pool, user_id: int, spend_id: int, tag_id: int
+) -> bool | None:
+    """True when the tag was added, False when removed, None when not allowed."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            allowed = await conn.fetchval(
+                """
+                SELECT 1 FROM spends s
+                  JOIN tags t ON t.user_id = s.user_id
+                 WHERE s.id = $1 AND t.id = $2 AND s.user_id = $3
+                """,
+                spend_id,
+                tag_id,
+                user_id,
+            )
+            if not allowed:
+                return None
+            removed = await conn.fetchval(
+                "DELETE FROM spend_tags WHERE spend_id = $1 AND tag_id = $2 RETURNING tag_id",
+                spend_id,
+                tag_id,
+            )
+            if removed is not None:
+                return False
+            await conn.execute(
+                "INSERT INTO spend_tags (spend_id, tag_id) VALUES ($1, $2)", spend_id, tag_id
+            )
+            return True
+
+
+async def delete_tag(pool: asyncpg.Pool, user_id: int, tag_id: int) -> str | None:
+    return await pool.fetchval(
+        "DELETE FROM tags WHERE id = $1 AND user_id = $2 RETURNING name", tag_id, user_id
+    )
+
+
 # --- reports -----------------------------------------------------------------
 
 
@@ -388,11 +500,60 @@ async def totals_by_currency(
     return {row["currency"]: row["total"] for row in rows}
 
 
+async def report_by_tag(
+    pool: asyncpg.Pool, user_id: int, start: datetime, end: datetime
+) -> list[asyncpg.Record]:
+    """Totals per (currency, tag). A spend with several tags counts towards each of them."""
+    return await pool.fetch(
+        """
+        SELECT s.currency, t.name AS tag, sum(s.amount) AS total, count(*) AS n
+          FROM spend_tags st
+          JOIN spends s ON s.id = st.spend_id
+          JOIN tags t ON t.id = st.tag_id
+         WHERE s.user_id = $1
+           AND s.status = 'done'
+           AND s.occurred_at >= $2
+           AND s.occurred_at < $3
+         GROUP BY s.currency, t.name
+         ORDER BY s.currency, total DESC
+        """,
+        user_id,
+        start,
+        end,
+    )
+
+
+async def count_untagged(
+    pool: asyncpg.Pool, user_id: int, start: datetime, end: datetime
+) -> int:
+    return await pool.fetchval(
+        """
+        SELECT count(*) FROM spends s
+         WHERE s.user_id = $1
+           AND s.status = 'done'
+           AND s.occurred_at >= $2
+           AND s.occurred_at < $3
+           AND NOT EXISTS (SELECT 1 FROM spend_tags st WHERE st.spend_id = s.id)
+        """,
+        user_id,
+        start,
+        end,
+    )
+
+
 async def export_rows(pool: asyncpg.Pool, user_id: int) -> list[asyncpg.Record]:
     return await pool.fetch(
         """
         SELECT s.occurred_at, s.amount, s.currency, s.status, s.source,
-               COALESCE(c.name, '') AS category, COALESCE(s.raw, '') AS raw
+               COALESCE(c.name, '') AS category,
+               COALESCE(
+                   (SELECT string_agg(t.name, ', ' ORDER BY t.name)
+                      FROM spend_tags st JOIN tags t ON t.id = st.tag_id
+                     WHERE st.spend_id = s.id),
+                   ''
+               ) AS tags,
+               COALESCE(s.note, '') AS note,
+               COALESCE(s.raw, '') AS raw
           FROM spends s
           LEFT JOIN categories c ON c.id = s.category_id
          WHERE s.user_id = $1

@@ -23,16 +23,22 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message, TelegramObj
 
 from . import db, keyboards, notifier
 from .config import Config
-from .reports import build_report, money, user_tz
+from .reports import build_report, build_tag_report, money, user_tz
 
 router = Router()
 
 MANUAL_SPEND_RE = re.compile(r"^\s*(\d+(?:[.,]\d{1,2})?)\s*(.*)$", re.DOTALL)
 MAX_CATEGORY_NAME = 32
+MAX_TAG_NAME = 24
+MAX_TAGS_PER_MESSAGE = 5
+MAX_NOTE = 200
+LAST_LIMIT = 10
 
 
 class Flow(StatesGroup):
     category_name = State()
+    tag_names = State()
+    note_text = State()
 
 
 class UserMiddleware(BaseMiddleware):
@@ -74,11 +80,78 @@ def _local(moment: datetime, user: asyncpg.Record) -> datetime:
     return moment.astimezone(user_tz(user["tz_minutes"]))
 
 
-def _done_text(spend: asyncpg.Record, category_name: str | None) -> str:
+def _spend_text(
+    spend: asyncpg.Record, tags: list[asyncpg.Record], user: asyncpg.Record
+) -> str:
+    """One card describing a spend: amount, category, tags, note, time."""
     amount = f"{money(spend['amount'])} {html.escape(spend['currency'])}"
-    if category_name is None:
-        return f"🚫 {amount} → <b>не расход</b>"
-    return f"✅ {amount} → <b>{html.escape(category_name)}</b>"
+    if spend["status"] == "ignored":
+        head = f"🚫 {amount} → <b>не расход</b>"
+    elif spend["category_name"]:
+        head = f"✅ {amount} → <b>{html.escape(spend['category_name'])}</b>"
+    else:
+        head = f"💸 {amount} — <b>без категории</b>"
+
+    lines = [head]
+    if tags:
+        lines.append("🏷 " + ", ".join(html.escape(tag["name"]) for tag in tags))
+    if spend["note"]:
+        lines.append(f"📝 {html.escape(spend['note'])}")
+    lines.append(f"<i>{_local(spend['occurred_at'], user).strftime('%d.%m %H:%M')}</i>")
+    return "\n".join(lines)
+
+
+def _last_list_text(spends: list[asyncpg.Record], user: asyncpg.Record) -> str:
+    lines = ["🧾 <b>Последние траты</b>", ""]
+    for number, spend in enumerate(spends, start=1):
+        when = _local(spend["occurred_at"], user).strftime("%d.%m %H:%M")
+        if spend["status"] == "ignored":
+            tail = "🚫 не расход"
+        elif spend["category_name"]:
+            tail = html.escape(spend["category_name"])
+        else:
+            tail = "⏳ без категории"
+        lines.append(
+            f"<b>{number}.</b> <code>{when}</code>  <b>{money(spend['amount'])}</b> "
+            f"{html.escape(spend['currency'])} — {tail}"
+        )
+    lines.append("")
+    lines.append("<i>Нажми номер, чтобы открыть трату: теги, описание, удаление.</i>")
+    return "\n".join(lines)
+
+
+async def _show_spend(
+    cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record, spend_id: int
+) -> bool:
+    """Redraw the spend card in place. False means the spend is gone."""
+    spend = await db.get_spend(pool, user["id"], spend_id)
+    if spend is None:
+        await cb.answer("Запись не найдена", show_alert=True)
+        return False
+    tags = await db.tags_for_spend(pool, spend_id)
+    await _safe_edit(cb, _spend_text(spend, tags, user), keyboards.spend_actions(spend_id))
+    return True
+
+
+async def _show_tag_picker(
+    cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record, spend_id: int
+) -> None:
+    spend = await db.get_spend(pool, user["id"], spend_id)
+    if spend is None:
+        await cb.answer("Запись не найдена", show_alert=True)
+        return
+    tags = await db.list_tags(pool, user["id"])
+    selected = {tag["id"] for tag in await db.tags_for_spend(pool, spend_id)}
+    hint = (
+        "Отметь теги — на что именно ушли деньги."
+        if tags
+        else "Тегов пока нет. Добавь первые — например: вода, кофе, курут."
+    )
+    await _safe_edit(
+        cb,
+        f"{_spend_text(spend, [], user)}\n\n{hint}",
+        keyboards.tag_picker(spend_id, tags, selected),
+    )
 
 
 async def _safe_edit(cb: CallbackQuery, text: str, markup=None) -> None:
@@ -128,8 +201,10 @@ async def cmd_help(msg: Message) -> None:
         "<b>Что умею</b>\n\n"
         "📊 /report — отчёты за день, неделю, месяц с переключением периодов\n"
         "/day /week /month — сразу нужный период\n"
+        "🏷 В любом отчёте есть кнопка «По тегам» — сколько ушло на воду, кофе, курут\n"
         "⏳ /pending — разметить траты, оставшиеся без категории\n"
-        "🧾 /last — последние 10 трат\n"
+        "🧾 /last — последние траты: открыть по номеру, поставить теги, "
+        "дописать описание или удалить\n"
         "📁 /cats — категории: добавить, убрать\n"
         "⬇️ /export — выгрузка всех трат в CSV\n"
         "⚙️ /settings — валюта и часовой пояс\n"
@@ -238,6 +313,15 @@ async def cb_report(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record)
     await cb.answer()
 
 
+@router.callback_query(F.data.startswith("rtag:"))
+async def cb_tag_report(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    _, kind, raw_offset = cb.data.split(":", 2)
+    offset = int(raw_offset)
+    text = await build_tag_report(pool, user, kind, offset)
+    await _safe_edit(cb, text, keyboards.report_nav(kind, offset, by_tag=True))
+    await cb.answer()
+
+
 # --- tagging spends ----------------------------------------------------------
 
 
@@ -261,24 +345,11 @@ async def cmd_pending(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) ->
 @router.message(Command("last"))
 @router.message(F.text == keyboards.BTN_LAST)
 async def cmd_last(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
-    rows = await db.last_spends(pool, user["id"])
+    rows = await db.last_spends(pool, user["id"], LAST_LIMIT)
     if not rows:
         await msg.answer("Трат пока нет.")
         return
-    lines = ["🧾 <b>Последние траты</b>", ""]
-    for spend in rows:
-        when = _local(spend["occurred_at"], user).strftime("%d.%m %H:%M")
-        if spend["status"] == "ignored":
-            tail = "🚫 не расход"
-        elif spend["category_name"]:
-            tail = html.escape(spend["category_name"])
-        else:
-            tail = "⏳ без категории"
-        lines.append(
-            f"<code>{when}</code>  <b>{money(spend['amount'])}</b> "
-            f"{html.escape(spend['currency'])} — {tail}"
-        )
-    await msg.answer("\n".join(lines))
+    await msg.answer(_last_list_text(rows, user), reply_markup=keyboards.spend_list(rows))
 
 
 @router.callback_query(F.data.startswith("cat:"))
@@ -288,9 +359,7 @@ async def cb_pick_category(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.
     if spend is None:
         await cb.answer("Запись не найдена", show_alert=True)
         return
-    await _safe_edit(
-        cb, _done_text(spend, spend["category_name"]), keyboards.after_pick(spend["id"])
-    )
+    await _show_spend(cb, pool, user, spend["id"])
     await cb.answer(spend["category_name"])
 
 
@@ -301,8 +370,14 @@ async def cb_skip(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -
     if spend is None:
         await cb.answer("Запись не найдена", show_alert=True)
         return
-    await _safe_edit(cb, _done_text(spend, None), keyboards.after_pick(spend_id))
+    await _show_spend(cb, pool, user, spend_id)
     await cb.answer("Не расход")
+
+
+@router.callback_query(F.data.startswith("sp:"))
+async def cb_open_spend(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    await _show_spend(cb, pool, user, int(cb.data.split(":", 1)[1]))
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("edit:"))
@@ -320,11 +395,133 @@ async def cb_edit(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -
 
 
 @router.callback_query(F.data.startswith("del:"))
-async def cb_delete(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+async def cb_delete_untagged(
+    cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
+    """Deleting a spend that has no category yet — no confirmation needed."""
     spend_id = int(cb.data.split(":", 1)[1])
     if await db.delete_spend(pool, user["id"], spend_id):
         await _safe_edit(cb, "🗑 Запись удалена")
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("delask:"))
+async def cb_delete_ask(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    spend_id = int(cb.data.split(":", 1)[1])
+    spend = await db.get_spend(pool, user["id"], spend_id)
+    if spend is None:
+        await cb.answer("Запись не найдена", show_alert=True)
+        return
+    await _safe_edit(
+        cb,
+        f"Удалить эту трату?\n\n{_spend_text(spend, [], user)}",
+        keyboards.confirm_delete(spend_id),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("delyes:"))
+async def cb_delete_confirmed(
+    cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
+    spend_id = int(cb.data.split(":", 1)[1])
+    if await db.delete_spend(pool, user["id"], spend_id):
+        await _safe_edit(cb, "🗑 Трата удалена")
+        await cb.answer("Удалено")
+    else:
+        await cb.answer("Запись не найдена", show_alert=True)
+
+
+# --- tags --------------------------------------------------------------------
+
+
+@router.callback_query(F.data.startswith("tags:"))
+async def cb_tags(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    await _show_tag_picker(cb, pool, user, int(cb.data.split(":", 1)[1]))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("tg:"))
+async def cb_toggle_tag(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    _, raw_spend, raw_tag = cb.data.split(":", 2)
+    spend_id = int(raw_spend)
+    added = await db.toggle_tag(pool, user["id"], spend_id, int(raw_tag))
+    if added is None:
+        await cb.answer("Тег не найден", show_alert=True)
+        return
+    await _show_tag_picker(cb, pool, user, spend_id)
+    await cb.answer("Отмечен" if added else "Снят")
+
+
+@router.callback_query(F.data.startswith("tgnew:"))
+async def cb_new_tags(cb: CallbackQuery, state: FSMContext) -> None:
+    spend_id = int(cb.data.split(":", 1)[1])
+    await state.set_state(Flow.tag_names)
+    await state.update_data(spend_id=spend_id)
+    await cb.message.answer(
+        "Какие теги добавить? Можно несколько через запятую:\n"
+        "<code>вода, кофе, курут</code>"
+    )
+    await cb.answer()
+
+
+@router.message(StateFilter(Flow.tag_names))
+async def on_tag_names(
+    msg: Message, state: FSMContext, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
+    names = [part.strip()[:MAX_TAG_NAME] for part in (msg.text or "").split(",")]
+    names = [name for name in names if name][:MAX_TAGS_PER_MESSAGE]
+    data = await state.get_data()
+    await state.clear()
+    if not names:
+        await msg.answer("Не разобрал теги. Пример: <code>вода, кофе</code>")
+        return
+
+    spend_id = data["spend_id"]
+    attached = []
+    for name in names:
+        tag = await db.ensure_tag(pool, user["id"], name)
+        if await db.attach_tag(pool, user["id"], spend_id, tag["id"]):
+            attached.append(tag["name"])
+
+    spend = await db.get_spend(pool, user["id"], spend_id)
+    if spend is None:
+        await msg.answer("Теги сохранил, но саму трату уже не нашёл.")
+        return
+    tags = await db.tags_for_spend(pool, spend_id)
+    await msg.answer(
+        _spend_text(spend, tags, user), reply_markup=keyboards.spend_actions(spend_id)
+    )
+
+
+@router.callback_query(F.data.startswith("note:"))
+async def cb_note(cb: CallbackQuery, state: FSMContext) -> None:
+    spend_id = int(cb.data.split(":", 1)[1])
+    await state.set_state(Flow.note_text)
+    await state.update_data(spend_id=spend_id)
+    await cb.message.answer(
+        "Напиши описание траты — что именно купил.\n"
+        "Чтобы стереть прежнее описание, отправь <code>-</code>"
+    )
+    await cb.answer()
+
+
+@router.message(StateFilter(Flow.note_text))
+async def on_note_text(
+    msg: Message, state: FSMContext, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
+    data = await state.get_data()
+    await state.clear()
+    text = (msg.text or "").strip()[:MAX_NOTE]
+    spend = await db.set_note(pool, user["id"], data["spend_id"], None if text == "-" else text)
+    if spend is None:
+        await msg.answer("Трату уже не нашёл — возможно, она удалена.")
+        return
+    spend = await db.get_spend(pool, user["id"], data["spend_id"])
+    tags = await db.tags_for_spend(pool, data["spend_id"])
+    await msg.answer(
+        _spend_text(spend, tags, user), reply_markup=keyboards.spend_actions(spend["id"])
+    )
 
 
 @router.callback_query(F.data.startswith("new:"))
@@ -396,8 +593,10 @@ async def on_category_name(
             "но трату уже не нашёл — размечу через /pending."
         )
         return
+    tags = await db.tags_for_spend(pool, spend_id)
     await msg.answer(
-        _done_text(spend, spend["category_name"]) + "\nКатегория добавлена в кнопки."
+        _spend_text(spend, tags, user) + "\n\nКатегория добавлена в кнопки.",
+        reply_markup=keyboards.spend_actions(spend_id),
     )
 
 
@@ -414,7 +613,9 @@ async def cmd_export(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> 
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["datetime", "amount", "currency", "category", "status", "source", "raw"])
+    writer.writerow(
+        ["datetime", "amount", "currency", "category", "tags", "note", "status", "source", "raw"]
+    )
     for row in rows:
         writer.writerow(
             [
@@ -422,6 +623,8 @@ async def cmd_export(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> 
                 f"{row['amount']:.2f}",
                 row["currency"],
                 row["category"],
+                row["tags"],
+                row["note"],
                 row["status"],
                 row["source"],
                 row["raw"],
@@ -505,6 +708,9 @@ async def on_plain_text(
         category_id=category["id"] if category else None,
     )
     if category:
-        await msg.answer(_done_text(spend, category["name"]), reply_markup=keyboards.after_pick(spend["id"]))
+        stored = await db.get_spend(pool, user["id"], spend["id"])
+        await msg.answer(
+            _spend_text(stored, [], user), reply_markup=keyboards.spend_actions(spend["id"])
+        )
     else:
         await notifier.ask_category(msg.bot, pool, user, spend)

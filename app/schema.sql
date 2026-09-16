@@ -54,3 +54,23 @@ CREATE INDEX IF NOT EXISTS spends_dedup_idx
 -- Serves reports: grouping by category within a period.
 CREATE INDEX IF NOT EXISTS spends_report_idx
     ON spends (user_id, status, currency, occurred_at);
+
+-- Tags sit below categories: a spend has one category and any number of tags,
+-- so "Магазин" can be broken down into вода / кофе / курут.
+CREATE TABLE IF NOT EXISTS tags (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    BIGINT      NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    name       TEXT        NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS tags_user_name_key
+    ON tags (user_id, lower(name));
+
+CREATE TABLE IF NOT EXISTS spend_tags (
+    spend_id BIGINT NOT NULL REFERENCES spends (id) ON DELETE CASCADE,
+    tag_id   BIGINT NOT NULL REFERENCES tags (id) ON DELETE CASCADE,
+    PRIMARY KEY (spend_id, tag_id)
+);
+
+CREATE INDEX IF NOT EXISTS spend_tags_tag_idx ON spend_tags (tag_id, spend_id);

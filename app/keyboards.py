@@ -60,29 +60,93 @@ def category_picker(spend_id: int, categories: list[asyncpg.Record]) -> InlineKe
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def after_pick(spend_id: int) -> InlineKeyboardMarkup:
-    """A collapsed spend keeps one button so it can still be re-tagged."""
+def spend_actions(spend_id: int) -> InlineKeyboardMarkup:
+    """What can still be done to a spend once its category is set."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✏️ Изменить", callback_data=f"edit:{spend_id}")]
+            [
+                InlineKeyboardButton(text="🏷 Теги", callback_data=f"tags:{spend_id}"),
+                InlineKeyboardButton(text="📝 Описание", callback_data=f"note:{spend_id}"),
+            ],
+            [
+                InlineKeyboardButton(text="✏️ Категория", callback_data=f"edit:{spend_id}"),
+                InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delask:{spend_id}"),
+            ],
         ]
     )
 
 
-def report_nav(kind: str, offset: int) -> InlineKeyboardMarkup:
+def tag_picker(
+    spend_id: int, tags: list[asyncpg.Record], selected: set[int]
+) -> InlineKeyboardMarkup:
+    """Tags toggle on and off; a checkmark shows what is already attached."""
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for tag in tags:
+        mark = "✅ " if tag["id"] in selected else ""
+        row.append(
+            InlineKeyboardButton(
+                text=f"{mark}{tag['name']}", callback_data=f"tg:{spend_id}:{tag['id']}"
+            )
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [InlineKeyboardButton(text="➕ Новые теги", callback_data=f"tgnew:{spend_id}")]
+    )
+    rows.append([InlineKeyboardButton(text="✅ Готово", callback_data=f"sp:{spend_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def confirm_delete(spend_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🗑 Да, удалить", callback_data=f"delyes:{spend_id}"),
+                InlineKeyboardButton(text="Отмена", callback_data=f"sp:{spend_id}"),
+            ]
+        ]
+    )
+
+
+def spend_list(spends: list[asyncpg.Record]) -> InlineKeyboardMarkup:
+    """Numbered buttons matching the lines of the /last listing."""
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for number, spend in enumerate(spends, start=1):
+        row.append(InlineKeyboardButton(text=str(number), callback_data=f"sp:{spend['id']}"))
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def report_nav(kind: str, offset: int, *, by_tag: bool = False) -> InlineKeyboardMarkup:
+    prefix = "rtag" if by_tag else "rep"
     nav = [
-        InlineKeyboardButton(text="←", callback_data=f"rep:{kind}:{offset + 1}"),
+        InlineKeyboardButton(text="←", callback_data=f"{prefix}:{kind}:{offset + 1}"),
         InlineKeyboardButton(text=PERIOD_TITLES[kind], callback_data="noop"),
     ]
     if offset > 0:
-        nav.append(InlineKeyboardButton(text="→", callback_data=f"rep:{kind}:{offset - 1}"))
+        nav.append(
+            InlineKeyboardButton(text="→", callback_data=f"{prefix}:{kind}:{offset - 1}")
+        )
 
     switch = [
-        InlineKeyboardButton(text=title, callback_data=f"rep:{other}:0")
+        InlineKeyboardButton(text=title, callback_data=f"{prefix}:{other}:0")
         for other, title in PERIOD_TITLES.items()
         if other != kind
     ]
-    return InlineKeyboardMarkup(inline_keyboard=[nav, switch])
+    if by_tag:
+        mode = [InlineKeyboardButton(text="📊 По категориям", callback_data=f"rep:{kind}:{offset}")]
+    else:
+        mode = [InlineKeyboardButton(text="🏷 По тегам", callback_data=f"rtag:{kind}:{offset}")]
+    return InlineKeyboardMarkup(inline_keyboard=[nav, switch, mode])
 
 
 def report_menu() -> InlineKeyboardMarkup:

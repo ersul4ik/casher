@@ -16,7 +16,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from app import db
-from app.reports import build_report, resolve_period
+from app.reports import build_report, build_tag_report, resolve_period
 
 TEST_DSN = os.environ.get("TEST_DATABASE_URL", "")
 BISHKEK = 360
@@ -26,7 +26,7 @@ BISHKEK = 360
 class IntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.pool = await db.create_pool(TEST_DSN)
-        await self.pool.execute("DROP TABLE IF EXISTS spends, categories, users CASCADE")
+        await self.pool.execute("DROP TABLE IF EXISTS spend_tags, tags, spends, categories, users CASCADE")
         await db.apply_schema(self.pool)
         # Re-applying the schema must not fail: it runs on every start.
         await db.apply_schema(self.pool)
@@ -268,6 +268,143 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["category"], category["name"])
         self.assertEqual(rows[0]["status"], "done")
+
+    async def test_tags_attach_toggle_and_stay_per_user(self) -> None:
+        alice, _ = await self.make_user(1020)
+        bob, _ = await self.make_user(1021)
+        category = (await db.list_categories(self.pool, alice["id"]))[0]
+        spend = await db.create_spend(
+            self.pool,
+            user_id=alice["id"],
+            amount=Decimal("120.00"),
+            currency="KGS",
+            raw=None,
+            source="manual",
+            category_id=category["id"],
+        )
+
+        water = await db.ensure_tag(self.pool, alice["id"], "вода")
+        # Same name in another case is the same tag, not a second one.
+        again = await db.ensure_tag(self.pool, alice["id"], "Вода")
+        self.assertEqual(again["id"], water["id"])
+
+        self.assertTrue(await db.attach_tag(self.pool, alice["id"], spend["id"], water["id"]))
+        # Attaching twice is a no-op rather than an error.
+        self.assertFalse(await db.attach_tag(self.pool, alice["id"], spend["id"], water["id"]))
+        self.assertEqual(
+            [t["name"] for t in await db.tags_for_spend(self.pool, spend["id"])], ["вода"]
+        )
+
+        self.assertIs(await db.toggle_tag(self.pool, alice["id"], spend["id"], water["id"]), False)
+        self.assertEqual(await db.tags_for_spend(self.pool, spend["id"]), [])
+        self.assertIs(await db.toggle_tag(self.pool, alice["id"], spend["id"], water["id"]), True)
+
+        # Bob's tag cannot reach Alice's spend, and Bob cannot touch hers.
+        bob_tag = await db.ensure_tag(self.pool, bob["id"], "кофе")
+        self.assertFalse(await db.attach_tag(self.pool, alice["id"], spend["id"], bob_tag["id"]))
+        self.assertIsNone(await db.toggle_tag(self.pool, bob["id"], spend["id"], water["id"]))
+        self.assertIsNone(await db.delete_tag(self.pool, bob["id"], water["id"]))
+
+    async def test_tag_report_and_untagged_count(self) -> None:
+        user, _ = await self.make_user(1022)
+        category = (await db.list_categories(self.pool, user["id"]))[0]
+        water = await db.ensure_tag(self.pool, user["id"], "вода")
+        coffee = await db.ensure_tag(self.pool, user["id"], "кофе")
+
+        async def spend(amount: str, tags: list) -> None:
+            row = await db.create_spend(
+                self.pool,
+                user_id=user["id"],
+                amount=Decimal(amount),
+                currency="KGS",
+                raw=None,
+                source="manual",
+                category_id=category["id"],
+            )
+            for tag in tags:
+                await db.attach_tag(self.pool, user["id"], row["id"], tag["id"])
+
+        await spend("50.00", [water])
+        await spend("70.00", [water, coffee])
+        await spend("30.00", [])
+
+        period = resolve_period("month", 0, BISHKEK)
+        rows = await db.report_by_tag(self.pool, user["id"], period.start, period.end)
+        totals = {row["tag"]: row["total"] for row in rows}
+        self.assertEqual(totals["вода"], Decimal("120.00"))
+        # A spend carrying two tags counts towards both.
+        self.assertEqual(totals["кофе"], Decimal("70.00"))
+
+        self.assertEqual(
+            await db.count_untagged(self.pool, user["id"], period.start, period.end), 1
+        )
+
+        text = await build_tag_report(self.pool, user, "month", 0)
+        self.assertIn("вода", text)
+        self.assertIn("Без тегов: 1", text)
+
+        empty = await build_tag_report(self.pool, user, "day", 5)
+        self.assertIn("ничего не отмечено тегами", empty)
+
+    async def test_note_can_be_set_and_cleared(self) -> None:
+        user, _ = await self.make_user(1023)
+        spend = await db.create_spend(
+            self.pool,
+            user_id=user["id"],
+            amount=Decimal("15.00"),
+            currency="KGS",
+            raw=None,
+            source="manual",
+        )
+        updated = await db.set_note(self.pool, user["id"], spend["id"], "две бутылки воды")
+        self.assertEqual(updated["note"], "две бутылки воды")
+        cleared = await db.set_note(self.pool, user["id"], spend["id"], None)
+        self.assertIsNone(cleared["note"])
+
+        other, _ = await self.make_user(1024)
+        self.assertIsNone(await db.set_note(self.pool, other["id"], spend["id"], "чужое"))
+
+    async def test_deleting_spend_removes_its_tag_links(self) -> None:
+        user, _ = await self.make_user(1025)
+        spend = await db.create_spend(
+            self.pool,
+            user_id=user["id"],
+            amount=Decimal("40.00"),
+            currency="KGS",
+            raw=None,
+            source="manual",
+        )
+        tag = await db.ensure_tag(self.pool, user["id"], "курут")
+        await db.attach_tag(self.pool, user["id"], spend["id"], tag["id"])
+
+        self.assertTrue(await db.delete_spend(self.pool, user["id"], spend["id"]))
+        left = await self.pool.fetchval(
+            "SELECT count(*) FROM spend_tags WHERE spend_id = $1", spend["id"]
+        )
+        self.assertEqual(left, 0)
+        # The tag itself survives for future spends.
+        self.assertEqual([t["name"] for t in await db.list_tags(self.pool, user["id"])], ["курут"])
+
+    async def test_export_carries_tags_and_note(self) -> None:
+        user, _ = await self.make_user(1026)
+        category = (await db.list_categories(self.pool, user["id"]))[0]
+        spend = await db.create_spend(
+            self.pool,
+            user_id=user["id"],
+            amount=Decimal("99.00"),
+            currency="KGS",
+            raw=None,
+            source="manual",
+            category_id=category["id"],
+        )
+        for name in ("вода", "кофе"):
+            tag = await db.ensure_tag(self.pool, user["id"], name)
+            await db.attach_tag(self.pool, user["id"], spend["id"], tag["id"])
+        await db.set_note(self.pool, user["id"], spend["id"], "по дороге домой")
+
+        row = (await db.export_rows(self.pool, user["id"]))[0]
+        self.assertEqual(row["tags"], "вода, кофе")
+        self.assertEqual(row["note"], "по дороге домой")
 
     async def test_admin_stats(self) -> None:
         user, _ = await self.make_user(1013)
