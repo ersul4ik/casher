@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -16,6 +17,9 @@ from .config import Config
 log = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 8 * 1024
+
+# Render exports the deployed commit; without it we are running from a checkout.
+APP_VERSION = (os.environ.get("RENDER_GIT_COMMIT") or "dev")[:7]
 
 # A push reads "Успещная операция по QR. Сумма: 1470.00 KGS". The typo in the first word is the
 # bank's own, so we anchor on "Сумма:" alone — the typo may be fixed in any app update.
@@ -134,8 +138,10 @@ async def handle_health(request: web.Request) -> web.Response:
         await request.app["pool"].fetchval("SELECT 1")
     except Exception:  # noqa: BLE001
         log.exception("Healthcheck: database unreachable")
-        return web.json_response({"status": "degraded", "db": False}, status=503)
-    return web.json_response({"status": "ok", "db": True})
+        return web.json_response(
+            {"status": "degraded", "db": False, "version": APP_VERSION}, status=503
+        )
+    return web.json_response({"status": "ok", "db": True, "version": APP_VERSION})
 
 
 def setup_routes(app: web.Application) -> None:
