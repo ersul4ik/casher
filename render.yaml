@@ -1,7 +1,7 @@
 # Blueprint для Render. Значения с sync: false вводятся в дашборде вручную.
 services:
   - type: web
-    name: cacher-bot
+    name: casher-bot
     runtime: python
     plan: free
     region: frankfurt

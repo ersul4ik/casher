@@ -54,40 +54,36 @@ set -a && source .env && set +a
 
 ---
 
-## Шаг 3. Положить код на GitHub
+## Шаг 3. Код на GitHub
 
-Из папки с проектом:
+Уже сделано: [github.com/ersul4ik/casher](https://github.com/ersul4ik/casher), ветка `main`.
+Репозиторий публичный — секретов в нём нет, всё чувствительное живёт в переменных окружения.
+Сделать приватным, если захочется: `gh repo edit ersul4ik/casher --visibility private`.
+
+Дальнейшие изменения выкатываются обычным пушем, Render подхватит их сам:
 
 ```bash
 cd /Users/eriksultanaliev/work/own/cacher
-git init
-git add .
-git commit -m "Трекер трат: бот, приём пушей, отчёты"
+git add -A && git commit -m "что изменилось"
+git push
 ```
 
-Дальше создать пустой репозиторий на [github.com/new](https://github.com/new) (имя `cacher`,
-**Private**, без README и .gitignore) и выполнить то, что GitHub покажет на экране:
-
-```bash
-git remote add origin git@github.com:<твой-логин>/cacher.git
-git branch -M main
-git push -u origin main
-```
-
-Файл `.env` в репозиторий не попадёт — он в `.gitignore`.
+Файл `.env` в репозиторий не попадает — он в `.gitignore`.
 
 ---
 
 ## Шаг 4. Развернуть на Render
 
 1. [render.com](https://render.com) → **Get Started** → войти через GitHub.
-2. **New +** → **Web Service** → **Build and deploy from a Git repository** → выбрать `cacher`
-   (при первом подключении Render попросит доступ к репозиторию — дать).
+2. **New +** → **Web Service** → **Build and deploy from a Git repository** → выбрать `casher`
+   (при первом подключении Render попросит доступ к репозиторию — дать). Так каждый `git push`
+   будет автоматически выкатывать новую версию. Альтернатива без автодеплоя: поле
+   **Public Git Repository** и адрес `https://github.com/ersul4ik/casher`.
 3. Заполнить:
 
    | Поле | Значение |
    |---|---|
-   | Name | `cacher-bot` (от него зависит адрес `https://cacher-bot.onrender.com`) |
+   | Name | `casher-bot` (от него зависит адрес `https://casher-bot.onrender.com`) |
    | Region | Frankfurt |
    | Branch | `main` |
    | Runtime / Language | Python 3 |
@@ -101,7 +97,7 @@ git push -u origin main
    |---|---|---|
    | `BOT_TOKEN` | `8123456789:AAH...` | шаг 1 |
    | `DATABASE_URL` | `postgresql://...neon.tech/neondb?sslmode=require...` | шаг 2 |
-   | `BASE_URL` | `https://cacher-bot.onrender.com` | имя сервиса из пункта 3 |
+   | `BASE_URL` | `https://casher-bot.onrender.com` | имя сервиса из пункта 3 |
    | `WEBHOOK_SECRET` | длинная случайная строка | `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` |
    | `ADMIN_IDS` | твой Telegram id | узнать у [@userinfobot](https://t.me/userinfobot) |
    | `DEFAULT_CURRENCY` | `KGS` | |
@@ -115,11 +111,11 @@ git push -u origin main
    ```
    База готова
    HTTP слушает порт 10000, приём трат на POST /spend
-   Вебхук Телеграма: https://cacher-bot.onrender.com/tg/...
+   Вебхук Телеграма: https://casher-bot.onrender.com/tg/...
    ```
 
 `BASE_URL` должен совпадать с реальным адресом сервиса (виден вверху страницы сервиса). Если
-Render выдал адрес с суффиксом вида `cacher-bot-a1b2.onrender.com`, поправь переменную и нажми
+Render выдал адрес с суффиксом вида `casher-bot-a1b2.onrender.com`, поправь переменную и нажми
 **Manual Deploy → Deploy latest commit**.
 
 > Вместо ручного заполнения можно использовать **New + → Blueprint**: в репозитории лежит
@@ -137,7 +133,7 @@ Render выдал адрес с суффиксом вида `cacher-bot-a1b2.onr
 5. Проверить приём пушей (токен взять из `/token`):
 
 ```bash
-curl -X POST https://cacher-bot.onrender.com/spend \
+curl -X POST https://casher-bot.onrender.com/spend \
   -H "X-Token: <твой токен>" \
   -H "Content-Type: application/json" \
   -d '{"raw": "Успещная операция по QR. Сумма: 1470.00 KGS"}'
@@ -155,8 +151,8 @@ Free-сервис Render засыпает после 15 минут без зап
 
 1. [cron-job.org](https://cron-job.org) → регистрация (бесплатно, без карты).
 2. **Create cronjob**:
-   - Title: `cacher keep-alive`
-   - URL: `https://cacher-bot.onrender.com/health`
+   - Title: `casher keep-alive`
+   - URL: `https://casher-bot.onrender.com/health`
    - Schedule: **Every 10 minutes**
 3. Save. На вкладке History должны идти ответы `200`.
 
