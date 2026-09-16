@@ -1,7 +1,7 @@
-"""Точка входа: один процесс держит и HTTP-приёмник трат, и Телеграм-бота.
+"""Entry point: a single process runs both the HTTP spend receiver and the Telegram bot.
 
-Локально:   python -m app.main            (long polling, BASE_URL не нужен)
-На хостинге: python -m app.main           (webhook, если задан BASE_URL)
+Locally: python -m app.main  — long polling, BASE_URL not needed.
+Hosted:  python -m app.main  — webhook mode, enabled by BASE_URL.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from .handlers import UserMiddleware, router
 
 log = logging.getLogger("cacher")
 
+# Descriptions show up in the Telegram command menu, so they stay in Russian.
 BOT_COMMANDS = [
     BotCommand(command="report", description="Отчёт: день / неделя / месяц"),
     BotCommand(command="pending", description="Разметить траты без категории"),
@@ -46,15 +47,15 @@ def build_dispatcher(pool, config: Config) -> Dispatcher:
 
 
 async def _set_webhook_with_retries(bot: Bot, dp: Dispatcher, config: Config) -> None:
-    """Без вебхука бот глухой, поэтому даём сети пару попыток и только потом падаем."""
+    """Without a webhook the bot is deaf, so give the network a few tries before giving up."""
     attempts = 3
     for attempt in range(1, attempts + 1):
         try:
             await bot.set_webhook(
                 config.webhook_url,
                 secret_token=config.webhook_secret,
-                # Не выбрасываем накопленное: бесплатный инстанс засыпает и передеплоивается,
-                # и нажатия, пришедшие в этот момент, иначе теряются молча.
+                # Keep queued updates: the free instance sleeps and redeploys, and the very
+                # update that wakes it up would otherwise be dropped without a trace.
                 drop_pending_updates=False,
                 allowed_updates=dp.resolve_used_update_types(),
             )
@@ -62,7 +63,7 @@ async def _set_webhook_with_retries(bot: Bot, dp: Dispatcher, config: Config) ->
         except Exception:  # noqa: BLE001
             if attempt == attempts:
                 raise
-            log.warning("Попытка %s/%s установить вебхук не удалась", attempt, attempts)
+            log.warning("Webhook setup attempt %s/%s failed", attempt, attempts)
             await asyncio.sleep(3 * attempt)
 
 
@@ -74,7 +75,7 @@ async def run() -> None:
 
     pool = await db.create_pool(config.database_url)
     await db.apply_schema(pool)
-    log.info("База готова")
+    log.info("Database ready")
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = build_dispatcher(pool, config)
@@ -94,21 +95,21 @@ async def run() -> None:
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", config.port).start()
-    log.info("HTTP слушает порт %s, приём трат на POST /spend", config.port)
+    log.info("HTTP listening on port %s, spends accepted at POST /spend", config.port)
 
     try:
         try:
             await bot.set_my_commands(BOT_COMMANDS)
-        except Exception:  # noqa: BLE001 — меню команд косметика, ради него падать не стоит
-            log.warning("Не удалось обновить меню команд", exc_info=True)
+        except Exception:  # noqa: BLE001 — the command menu is cosmetic, not worth crashing over
+            log.warning("Could not update the command menu", exc_info=True)
 
         if config.use_webhook:
             await _set_webhook_with_retries(bot, dp, config)
-            log.info("Вебхук Телеграма: %s", config.webhook_url)
-            await asyncio.Event().wait()  # работу ведут обработчики aiohttp
+            log.info("Telegram webhook: %s", config.webhook_url)
+            await asyncio.Event().wait()  # aiohttp handlers do the work from here
         else:
             await bot.delete_webhook(drop_pending_updates=True)
-            log.info("Режим long polling")
+            log.info("Long polling mode")
             await dp.start_polling(bot)
     finally:
         await runner.cleanup()
@@ -120,7 +121,7 @@ def main() -> None:
     try:
         asyncio.run(run())
     except (KeyboardInterrupt, SystemExit):
-        log.info("Остановлен")
+        log.info("Stopped")
 
 
 if __name__ == "__main__":

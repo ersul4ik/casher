@@ -1,6 +1,6 @@
-"""Тесты на чистую логику: парсинг пуша, периоды отчётов, нормализация DSN.
+"""Tests for the pure logic: push parsing, report periods, DSN normalisation.
 
-Запуск: python -m unittest discover -s tests
+Run: python -m unittest discover -s tests
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ class TestAmountParsing(unittest.TestCase):
         self.assertEqual(amount_from_raw(REAL_PUSH), Decimal("1470.00"))
 
     def test_amount_survives_typo_change(self) -> None:
-        """Банк исправит «Успещная» — парсер держится за «Сумма:», не за это слово."""
+        """The bank will fix its typo one day; the parser anchors on "Сумма:", not on it."""
         self.assertEqual(
             amount_from_raw("Успешная операция по QR. Сумма: 1 470.00 KGS"),
             Decimal("1470.00"),
@@ -87,7 +87,7 @@ class TestPeriods(unittest.TestCase):
         self.assertEqual(months_back, 14)
 
     def test_timezone_offset_applied(self) -> None:
-        """Полночь в Бишкеке — это 18:00 UTC предыдущего дня."""
+        """Midnight in Bishkek is 18:00 UTC on the previous day."""
         period = resolve_period("day", 0, BISHKEK)
         self.assertEqual(period.start.hour, 18)
 

@@ -1,4 +1,4 @@
-"""Отправка вопроса «куда записать?» — общая для веб-хука и ручного ввода."""
+"""Asking "which category?" — shared by the webhook and by manual entry."""
 
 from __future__ import annotations
 

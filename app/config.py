@@ -1,4 +1,4 @@
-"""Конфигурация из переменных окружения."""
+"""Configuration read from environment variables."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from dataclasses import dataclass
 def _require(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
-        raise RuntimeError(f"Не задана обязательная переменная окружения {name}")
+        raise RuntimeError(f"Required environment variable {name} is not set")
     return value
 
 
@@ -21,7 +21,7 @@ def _int(name: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError as exc:
-        raise RuntimeError(f"{name} должна быть целым числом, получено {raw!r}") from exc
+        raise RuntimeError(f"{name} must be an integer, got {raw!r}") from exc
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ class Config:
 
     @property
     def use_webhook(self) -> bool:
-        """Без BASE_URL бот работает на long polling — удобно для локального запуска."""
+        """Without BASE_URL the bot falls back to long polling, which suits local runs."""
         return bool(self.base_url)
 
     @property
@@ -62,7 +62,7 @@ def load_config() -> Config:
     )
     secret = os.environ.get("WEBHOOK_SECRET", "").strip()
     if not secret:
-        # Стабильный между рестартами путь вебхука, но не выводимый из публичных данных.
+        # Webhook path stable across restarts, yet not derivable from anything public.
         secret = hashlib.sha256(bot_token.encode()).hexdigest()[:32]
 
     return Config(
@@ -72,7 +72,7 @@ def load_config() -> Config:
         webhook_secret=secret,
         port=_int("PORT", 8080),
         default_currency=(os.environ.get("DEFAULT_CURRENCY") or "KGS").strip().upper(),
-        default_tz_minutes=_int("DEFAULT_TZ_MINUTES", 360),  # Бишкек, UTC+6
+        default_tz_minutes=_int("DEFAULT_TZ_MINUTES", 360),  # Bishkek, UTC+6
         admin_ids=admin_ids,
         dedup_window_seconds=_int("DEDUP_WINDOW_SECONDS", 90),
     )

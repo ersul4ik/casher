@@ -1,4 +1,4 @@
-"""HTTP-приём трат от шортката на iPhone."""
+"""HTTP endpoint that receives spends from the iPhone shortcut."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ log = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 8 * 1024
 
-# «Успещная операция по QR. Сумма: 1470.00 KGS» — опечатка в первом слове банковская,
-# поэтому цепляемся только за «Сумма:».
+# A push reads "Успещная операция по QR. Сумма: 1470.00 KGS". The typo in the first word is the
+# bank's own, so we anchor on "Сумма:" alone — the typo may be fixed in any app update.
 AMOUNT_LABELLED_RE = re.compile(r"[Сс]умма[:\s]+([0-9][0-9\s ]*(?:[.,][0-9]{1,2})?)")
 AMOUNT_ANY_RE = re.compile(r"([0-9][0-9\s ]*[.,][0-9]{2})")
 AMOUNT_FALLBACK_RE = re.compile(r"([0-9]+)")
@@ -39,7 +39,7 @@ def parse_amount(value: object) -> Decimal | None:
 
 
 def amount_from_raw(raw: str) -> Decimal | None:
-    """Достаёт сумму из текста пуша, если шорткат прислал его целиком."""
+    """Pull the amount out of the push text when the shortcut sends it whole."""
     for pattern in (AMOUNT_LABELLED_RE, AMOUNT_ANY_RE, AMOUNT_FALLBACK_RE):
         match = pattern.search(raw)
         if match:
@@ -75,7 +75,7 @@ async def handle_spend(request: web.Request) -> web.Response:
 
     user = await db.get_user_by_token(pool, token)
     if user is None:
-        log.warning("Отклонён запрос с неизвестным токеном")
+        log.warning("Rejected a request carrying an unknown token")
         return web.json_response({"error": "bad token"}, status=403)
 
     if request.content_length and request.content_length > MAX_BODY_BYTES:
@@ -119,8 +119,8 @@ async def handle_spend(request: web.Request) -> web.Response:
     )
     try:
         await notifier.ask_category(bot, pool, user, spend)
-    except Exception:  # noqa: BLE001 — трата уже записана, вопрос догонит через /pending
-        log.exception("Не смог отправить вопрос о категории, spend_id=%s", spend["id"])
+    except Exception:  # noqa: BLE001 — the spend is stored; /pending will catch up later
+        log.exception("Could not ask for a category, spend_id=%s", spend["id"])
         return web.json_response(
             {"status": "saved", "id": spend["id"], "note": "telegram unavailable"}
         )
@@ -129,11 +129,11 @@ async def handle_spend(request: web.Request) -> web.Response:
 
 
 async def handle_health(request: web.Request) -> web.Response:
-    """Сюда же стучится пинговалка, которая не даёт бесплатному инстансу заснуть."""
+    """Also the target of the keep-alive ping that stops the free instance from sleeping."""
     try:
         await request.app["pool"].fetchval("SELECT 1")
     except Exception:  # noqa: BLE001
-        log.exception("Healthcheck: база недоступна")
+        log.exception("Healthcheck: database unreachable")
         return web.json_response({"status": "degraded", "db": False}, status=503)
     return web.json_response({"status": "ok", "db": True})
 

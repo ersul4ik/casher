@@ -1,4 +1,4 @@
--- Схема трекера трат. Выполняется при каждом старте, все операции идемпотентны.
+-- Spend tracker schema. Applied on every start, so every statement is idempotent.
 
 CREATE TABLE IF NOT EXISTS users (
     id           BIGSERIAL PRIMARY KEY,
@@ -48,9 +48,9 @@ CREATE INDEX IF NOT EXISTS spends_user_time_idx
     ON spends (user_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS spends_user_status_idx
     ON spends (user_id, status, occurred_at DESC);
--- Под дедупликацию: тот же пользователь, та же сумма и валюта за последние N секунд.
+-- Serves deduplication: same user, amount and currency within the last N seconds.
 CREATE INDEX IF NOT EXISTS spends_dedup_idx
     ON spends (user_id, currency, amount, occurred_at DESC);
--- Под отчёты: группировка по категории внутри периода.
+-- Serves reports: grouping by category within a period.
 CREATE INDEX IF NOT EXISTS spends_report_idx
     ON spends (user_id, status, currency, occurred_at);

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Отправляет тестовую трату, имитируя шорткат с iPhone.
+# Sends a test spend, imitating the iPhone shortcut.
 #
-#   ./scripts/test_spend.sh https://cacher-bot.onrender.com <токен-из-/token> [сумма]
+#   ./scripts/test_spend.sh https://casher-arx3.onrender.com <token-from-/token> [amount]
 #
-# Без суммы отправляется реальный текст пуша — сумму разберёт сам бот.
+# Without an amount it sends a real push text and lets the bot parse the number itself.
 
 set -euo pipefail
 
-HOST="${1:?Укажи адрес сервиса, например https://cacher-bot.onrender.com}"
-TOKEN="${2:?Укажи личный токен, его выдаёт команда /token}"
+HOST="${1:?Pass the service URL, e.g. https://casher-arx3.onrender.com}"
+TOKEN="${2:?Pass your personal token, the /token command prints it}"
 AMOUNT="${3:-}"
 
 if [[ -n "$AMOUNT" ]]; then

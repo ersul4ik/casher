@@ -1,4 +1,7 @@
-"""Расчёт границ периодов и сборка текста отчётов."""
+"""Period boundaries and the report text built from them.
+
+Everything returned here is shown to the user, so the wording stays in Russian.
+"""
 
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ def user_tz(tz_minutes: int) -> timezone:
 
 
 def money(value: Decimal | float | int) -> str:
-    """1470.00 -> «1 470», 1470.50 -> «1 470.50»."""
+    """Format an amount: 1470.00 -> "1 470", 1470.50 -> "1 470.50"."""
     dec = Decimal(value).quantize(Decimal("0.01"))
     whole, _, frac = f"{dec:,.2f}".partition(".")
     whole = whole.replace(",", " ")
@@ -46,7 +49,7 @@ def _add_months(moment: datetime, months: int) -> datetime:
 
 @dataclass(frozen=True)
 class Period:
-    """Границы периода в UTC плюс локальные даты для заголовка."""
+    """Period bounds in UTC, plus the local dates used for the heading."""
 
     kind: str
     offset: int
@@ -61,9 +64,9 @@ class Period:
 
 
 def resolve_period(kind: str, offset: int, tz_minutes: int) -> Period:
-    """offset=0 — текущий период, 1 — предыдущий и так далее."""
+    """offset=0 is the current period, 1 the previous one, and so on."""
     if kind not in PERIODS:
-        raise ValueError(f"Неизвестный период {kind!r}")
+        raise ValueError(f"Unknown period {kind!r}")
     offset = max(0, offset)
     tz = user_tz(tz_minutes)
     now_local = datetime.now(timezone.utc).astimezone(tz)
@@ -134,7 +137,7 @@ def _delta_line(current: Decimal, previous: Decimal) -> str | None:
 async def build_report(
     pool: asyncpg.Pool, user: asyncpg.Record, kind: str, offset: int
 ) -> str:
-    """HTML-текст отчёта за период с разбивкой по категориям."""
+    """Build the HTML report for a period, broken down by category."""
     period = resolve_period(kind, offset, user["tz_minutes"])
     rows = await db.report_by_category(pool, user["id"], period.start, period.end)
     lines = [f"📊 <b>{html.escape(period_title(period))}</b>"]
@@ -152,7 +155,7 @@ async def build_report(
             pool, user["id"], prev_period.start, prev_period.end
         )
 
-        # Валюты в порядке убывания оборота: основная окажется первой.
+        # Currencies ordered by turnover, so the main one comes first.
         order = sorted(
             by_currency,
             key=lambda cur: sum(r["total"] for r in by_currency[cur]),

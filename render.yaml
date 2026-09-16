@@ -1,4 +1,4 @@
-# Blueprint для Render. Значения с sync: false вводятся в дашборде вручную.
+# Render blueprint. Values marked sync: false are entered by hand in the dashboard.
 services:
   - type: web
     name: casher-bot

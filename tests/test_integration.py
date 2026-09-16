@@ -1,6 +1,6 @@
-"""Интеграционные тесты на настоящем Postgres.
+"""Integration tests against a real Postgres.
 
-Без TEST_DATABASE_URL пропускаются. Поднять базу одной командой:
+Skipped unless TEST_DATABASE_URL is set. Spin a database up with:
 
     docker run -d --name cacher-pg -e POSTGRES_PASSWORD=pass -e POSTGRES_DB=cacher \
         -p 55432:5432 postgres:16-alpine
@@ -22,13 +22,13 @@ TEST_DSN = os.environ.get("TEST_DATABASE_URL", "")
 BISHKEK = 360
 
 
-@unittest.skipUnless(TEST_DSN, "TEST_DATABASE_URL не задан")
+@unittest.skipUnless(TEST_DSN, "TEST_DATABASE_URL is not set")
 class IntegrationTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.pool = await db.create_pool(TEST_DSN)
         await self.pool.execute("DROP TABLE IF EXISTS spends, categories, users CASCADE")
         await db.apply_schema(self.pool)
-        # Повторное применение схемы не должно падать — она выполняется при каждом старте.
+        # Re-applying the schema must not fail: it runs on every start.
         await db.apply_schema(self.pool)
 
     async def asyncTearDown(self) -> None:
@@ -93,7 +93,7 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
 
         ignored = await db.mark_ignored(self.pool, user["id"], spend["id"])
         self.assertEqual(ignored["status"], "ignored")
-        # «Не расход» не должен попадать в отчёт.
+        # An ignored spend must stay out of the report.
         period = resolve_period("month", 0, BISHKEK)
         rows = await db.report_by_category(self.pool, user["id"], period.start, period.end)
         self.assertEqual(rows, [])
@@ -113,7 +113,7 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(duplicate)
 
-        # Другая сумма, другая валюта и другой пользователь дублями не считаются.
+        # A different amount, currency or user is not a duplicate.
         self.assertIsNone(
             await db.find_recent_duplicate(self.pool, user["id"], Decimal("1470.01"), "KGS", 90)
         )
@@ -154,13 +154,13 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
         alice_rows = await db.report_by_category(self.pool, alice["id"], period.start, period.end)
         self.assertEqual(sum(r["total"] for r in alice_rows), Decimal("500.00"))
 
-        # Боб не может тронуть чужую трату даже зная её id.
+        # Bob cannot touch someone else's spend even knowing its id.
         self.assertIsNone(await db.get_spend(self.pool, bob["id"], alice_spend["id"]))
         self.assertIsNone(
             await db.set_category(self.pool, bob["id"], alice_spend["id"], bob_cat["id"])
         )
         self.assertFalse(await db.delete_spend(self.pool, bob["id"], alice_spend["id"]))
-        # И не может приписать чужую категорию своей трате.
+        # Nor can he tag his own spend with someone else's category.
         bob_spend = await db.create_spend(
             self.pool,
             user_id=bob["id"],
@@ -178,7 +178,7 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
         category = (await db.list_categories(self.pool, user["id"]))[0]
         today = resolve_period("day", 0, BISHKEK)
 
-        # Одна трата сегодня, одна — сорок дней назад.
+        # One spend today, one forty days ago.
         await db.create_spend(
             self.pool,
             user_id=user["id"],
@@ -247,7 +247,7 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
         stored = await db.get_spend(self.pool, user["id"], spend["id"])
         self.assertEqual(stored["category_name"], "Такси")
 
-        # Повторное добавление возвращает ту же категорию из архива, дубля не создаётся.
+        # Adding it again restores the archived row instead of creating a duplicate.
         restored = await db.add_category(self.pool, user["id"], "такси")
         self.assertEqual(restored["id"], category["id"])
         self.assertIn("Такси", [c["name"] for c in await db.list_categories(self.pool, user["id"])])

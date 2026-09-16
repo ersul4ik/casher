@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Проверка связи с базой: подключается, создаёт схему, показывает, что получилось.
+"""Database connectivity check: connects, applies the schema, reports what it found.
 
     cd /Users/eriksultanaliev/work/own/cacher
     set -a && source .env && set +a
     .venv/bin/python scripts/check_db.py
 
-Строка подключения нигде не печатается — только хост, чтобы было видно, та ли это база.
+The connection string is never printed — only the host, so you can tell which database it is.
 """
 
 from __future__ import annotations
@@ -23,37 +23,37 @@ from app import db  # noqa: E402
 async def main() -> int:
     dsn = os.environ.get("DATABASE_URL", "").strip()
     if not dsn:
-        print("DATABASE_URL не задан. Проверь, что .env заполнен и подгружен:")
+        print("DATABASE_URL is not set. Make sure .env is filled in and sourced:")
         print("  set -a && source .env && set +a")
         return 1
 
     host = urlsplit(db.normalize_dsn(dsn)[0]).hostname or "?"
-    print(f"Подключаюсь к {host} …")
+    print(f"Connecting to {host} …")
 
     try:
         pool = await db.create_pool(dsn)
     except Exception as exc:  # noqa: BLE001
-        print(f"Не подключился: {type(exc).__name__}: {exc}")
+        print(f"Connection failed: {type(exc).__name__}: {exc}")
         print(
-            "Проверь строку подключения: верен ли хост и не остался ли в ней "
-            "плейсхолдер вместо настоящего пароля."
+            "Check the connection string: the host, and whether a placeholder is still "
+            "sitting there instead of the real password."
         )
         return 1
 
     try:
         version = await pool.fetchval("SHOW server_version")
-        print(f"Связь есть, Postgres {version}")
+        print(f"Connected, Postgres {version}")
 
         await db.apply_schema(pool)
         tables = await pool.fetch(
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
         )
-        print("Таблицы:", ", ".join(row["tablename"] for row in tables) or "нет")
+        print("Tables:", ", ".join(row["tablename"] for row in tables) or "none")
 
         users = await pool.fetchval("SELECT count(*) FROM users")
         spends = await pool.fetchval("SELECT count(*) FROM spends")
-        print(f"Пользователей: {users}, трат: {spends}")
-        print("\nБаза готова к работе.")
+        print(f"Users: {users}, spends: {spends}")
+        print("\nDatabase is ready.")
     finally:
         await pool.close()
     return 0

@@ -1,4 +1,7 @@
-"""Клавиатуры бота: категории под тратой, навигация по отчётам, нижнее меню."""
+"""Bot keyboards: categories under a spend, report navigation, the bottom menu.
+
+Button captions are user-facing, so they stay in Russian.
+"""
 
 from __future__ import annotations
 
@@ -58,7 +61,7 @@ def category_picker(spend_id: int, categories: list[asyncpg.Record]) -> InlineKe
 
 
 def after_pick(spend_id: int) -> InlineKeyboardMarkup:
-    """Под схлопнутой тратой оставляем возможность переразметить её."""
+    """A collapsed spend keeps one button so it can still be re-tagged."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✏️ Изменить", callback_data=f"edit:{spend_id}")]

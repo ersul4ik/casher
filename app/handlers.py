@@ -1,4 +1,7 @@
-"""Хендлеры Телеграм-бота."""
+"""Telegram bot handlers.
+
+Reply texts are what the user reads, so they stay in Russian.
+"""
 
 from __future__ import annotations
 
@@ -33,7 +36,7 @@ class Flow(StatesGroup):
 
 
 class UserMiddleware(BaseMiddleware):
-    """Заводит/обновляет запись пользователя и кладёт её в data['user']."""
+    """Create or refresh the user row and hand it to handlers as data['user']."""
 
     async def __call__(
         self,
@@ -45,7 +48,7 @@ class UserMiddleware(BaseMiddleware):
         if tg_user is None or tg_user.is_bot:
             return await handler(event, data)
 
-        # Команда всегда прерывает незаконченный диалог (например ввод названия категории).
+        # A command always aborts an unfinished dialog, such as typing a category name.
         state: FSMContext | None = data.get("state")
         if state is not None and isinstance(event, Message) and (event.text or "").startswith("/"):
             await state.clear()
@@ -64,7 +67,7 @@ class UserMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
-# --- вспомогательное ---------------------------------------------------------
+# --- helpers -----------------------------------------------------------------
 
 
 def _local(moment: datetime, user: asyncpg.Record) -> datetime:
@@ -97,7 +100,7 @@ def _setup_instructions(config: Config, api_token: str) -> str:
     )
 
 
-# --- команды -----------------------------------------------------------------
+# --- commands ----------------------------------------------------------------
 
 
 @router.message(Command("start"))
@@ -193,7 +196,7 @@ async def cmd_tz(
     await msg.answer(f"Часовой пояс: <b>UTC{'+' if hours >= 0 else ''}{hours:g}</b>")
 
 
-# --- отчёты ------------------------------------------------------------------
+# --- reports -----------------------------------------------------------------
 
 
 async def _send_report(
@@ -235,7 +238,7 @@ async def cb_report(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record)
     await cb.answer()
 
 
-# --- разметка трат -----------------------------------------------------------
+# --- tagging spends ----------------------------------------------------------
 
 
 @router.message(Command("pending"))
@@ -333,7 +336,7 @@ async def cb_new_category(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-# --- категории ---------------------------------------------------------------
+# --- categories --------------------------------------------------------------
 
 
 @router.message(Command("cats"))
@@ -398,7 +401,7 @@ async def on_category_name(
     )
 
 
-# --- экспорт -----------------------------------------------------------------
+# --- export ------------------------------------------------------------------
 
 
 @router.message(Command("export"))
@@ -424,7 +427,7 @@ async def cmd_export(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> 
                 row["raw"],
             ]
         )
-    # BOM, иначе Excel открывает кириллицу кракозябрами.
+    # utf-8-sig: without the BOM Excel mangles Cyrillic text.
     payload = buffer.getvalue().encode("utf-8-sig")
     await msg.answer_document(
         BufferedInputFile(payload, filename=f"spends_{msg.from_user.id}.csv"),
@@ -432,7 +435,7 @@ async def cmd_export(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> 
     )
 
 
-# --- админская сводка --------------------------------------------------------
+# --- admin summary -----------------------------------------------------------
 
 
 @router.message(Command("stats"))
@@ -458,7 +461,7 @@ async def cmd_stats(msg: Message, pool: asyncpg.Pool, config: Config) -> None:
     await msg.answer("\n".join(lines))
 
 
-# --- ручной ввод трат --------------------------------------------------------
+# --- manual entry ------------------------------------------------------------
 
 
 @router.callback_query(F.data == "noop")

@@ -1,4 +1,4 @@
-# Запасной путь: тот же сервис на Koyeb, Fly.io, Cloud Run или своей VM.
+# Fallback route: the same service on Koyeb, Fly.io, Cloud Run or your own VM.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \

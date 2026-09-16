@@ -1,4 +1,4 @@
-"""Доступ к Postgres: пул соединений и все запросы трекера."""
+"""Postgres access: the connection pool and every query the tracker makes."""
 
 from __future__ import annotations
 
@@ -15,16 +15,16 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 DEFAULT_CATEGORIES = ("Кафе", "Обед", "Магазин", "Кофейня")
 
-# Параметры строки подключения, которые кладут psycopg/Neon, но не понимает asyncpg.
+# Connection string parameters psycopg and Neon emit but asyncpg does not understand.
 _UNSUPPORTED_DSN_PARAMS = ("channel_binding", "gssencmode", "target_session_attrs")
 
 
 def normalize_dsn(dsn: str) -> tuple[str, dict[str, Any]]:
-    """Приводит DSN к тому, что понимает asyncpg.
+    """Rewrite a DSN into the form asyncpg accepts.
 
-    Neon и Supabase выдают строку в формате psycopg: со схемой ``postgresql+asyncpg``,
-    с ``channel_binding=require`` и иногда с ``pgbouncer=true``. asyncpg на первых двух
-    падает, а с pgbouncer требует отключённого кеша подготовленных выражений.
+    Neon and Supabase hand out psycopg-flavoured strings: a ``postgresql+asyncpg`` scheme,
+    ``channel_binding=require`` and sometimes ``pgbouncer=true``. asyncpg chokes on the first
+    two, and behind pgbouncer it needs the prepared statement cache turned off.
     """
     scheme, netloc, path, query, fragment = urlsplit(dsn.strip())
     if "+" in scheme:  # postgresql+asyncpg -> postgresql
@@ -49,7 +49,7 @@ async def apply_schema(pool: asyncpg.Pool) -> None:
     await pool.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
-# --- пользователи ------------------------------------------------------------
+# --- users -------------------------------------------------------------------
 
 
 def new_api_token() -> str:
@@ -65,7 +65,7 @@ async def get_or_create_user(
     default_currency: str,
     default_tz_minutes: int,
 ) -> tuple[asyncpg.Record, bool]:
-    """Возвращает (пользователь, признак что он создан только что)."""
+    """Return (user, whether it was just created)."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             created = await conn.fetchrow(
@@ -141,7 +141,7 @@ async def update_settings(
     )
 
 
-# --- категории ---------------------------------------------------------------
+# --- categories --------------------------------------------------------------
 
 
 async def list_categories(pool: asyncpg.Pool, user_id: int) -> list[asyncpg.Record]:
@@ -156,7 +156,7 @@ async def list_categories(pool: asyncpg.Pool, user_id: int) -> list[asyncpg.Reco
 
 
 async def add_category(pool: asyncpg.Pool, user_id: int, name: str) -> asyncpg.Record:
-    """Создаёт категорию или возвращает одноимённую существующую (в т.ч. из архива)."""
+    """Create a category, or return an existing one with the same name, unarchiving it."""
     return await pool.fetchrow(
         """
         INSERT INTO categories (user_id, name, pos)
@@ -171,7 +171,7 @@ async def add_category(pool: asyncpg.Pool, user_id: int, name: str) -> asyncpg.R
 
 
 async def archive_category(pool: asyncpg.Pool, user_id: int, category_id: int) -> str | None:
-    """Прячет категорию из кнопок. Уже размеченные траты сохраняют ссылку на неё."""
+    """Hide a category from the buttons. Spends already tagged with it keep the reference."""
     return await pool.fetchval(
         """
         UPDATE categories SET is_archived = TRUE
@@ -183,7 +183,7 @@ async def archive_category(pool: asyncpg.Pool, user_id: int, category_id: int) -
     )
 
 
-# --- траты -------------------------------------------------------------------
+# --- spends ------------------------------------------------------------------
 
 
 async def find_recent_duplicate(
@@ -289,7 +289,7 @@ async def mark_ignored(pool: asyncpg.Pool, user_id: int, spend_id: int) -> async
 
 
 async def reopen_spend(pool: asyncpg.Pool, user_id: int, spend_id: int) -> asyncpg.Record | None:
-    """Возврат траты в статус «без категории» — кнопка «Изменить»."""
+    """Put a spend back into the uncategorised state — what the "edit" button does."""
     return await pool.fetchrow(
         """
         UPDATE spends
@@ -343,13 +343,13 @@ async def last_spends(pool: asyncpg.Pool, user_id: int, limit: int = 10) -> list
     )
 
 
-# --- отчёты ------------------------------------------------------------------
+# --- reports -----------------------------------------------------------------
 
 
 async def report_by_category(
     pool: asyncpg.Pool, user_id: int, start: datetime, end: datetime
 ) -> list[asyncpg.Record]:
-    """Суммы по (валюта, категория) за период. Только размеченные траты."""
+    """Totals per (currency, category) for the period. Tagged spends only."""
     return await pool.fetch(
         """
         SELECT s.currency,
@@ -402,7 +402,7 @@ async def export_rows(pool: asyncpg.Pool, user_id: int) -> list[asyncpg.Record]:
     )
 
 
-# --- админская сводка --------------------------------------------------------
+# --- admin summary -----------------------------------------------------------
 
 
 async def admin_stats(pool: asyncpg.Pool) -> dict[str, Any]:

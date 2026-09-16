@@ -1,6 +1,6 @@
-"""End-to-end проверка приёма трат: HTTP-запрос от шортката → запись в базе → сообщение в чат.
+"""End-to-end check of spend intake: shortcut request -> row in the database -> chat message.
 
-Требует TEST_DATABASE_URL, см. test_integration.py. Телеграм подменён заглушкой.
+Requires TEST_DATABASE_URL, see test_integration.py. Telegram is replaced with a stub.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ class FakeMessage:
 
 
 class FakeBot:
-    """Вместо Телеграма — список отправленных сообщений."""
+    """Stands in for Telegram, collecting the messages that would have been sent."""
 
     def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
@@ -44,12 +44,12 @@ class FakeBot:
 
     async def send_message(self, chat_id, text, reply_markup=None):
         if self.fail:
-            raise RuntimeError("Telegram недоступен")
+            raise RuntimeError("Telegram is unavailable")
         self.sent.append((chat_id, text))
         return FakeMessage()
 
 
-@unittest.skipUnless(TEST_DSN, "TEST_DATABASE_URL не задан")
+@unittest.skipUnless(TEST_DSN, "TEST_DATABASE_URL is not set")
 class SpendEndpointTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.pool = await db.create_pool(TEST_DSN)
@@ -134,7 +134,7 @@ class SpendEndpointTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(await db.get_spend(self.pool, other["id"], payload["id"]))
         self.assertIsNone(await db.get_spend(self.pool, self.user["id"], payload["id"]))
-        # Валюта не указана и в тексте её нет — берётся валюта владельца токена.
+        # No currency given and none in the text, so the token owner's currency is used.
         spend = await db.get_spend(self.pool, other["id"], payload["id"])
         self.assertEqual(spend["currency"], "USD")
         self.assertEqual(self.bot.sent[0][0], other["tg_id"])
@@ -172,7 +172,7 @@ class SpendEndpointTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         payload = await response.json()
         self.assertEqual(payload["status"], "saved")
-        # Трата записана и попадёт в /pending, когда Телеграм вернётся.
+        # The spend is stored and will show up in /pending once Telegram is back.
         self.assertEqual(await db.count_pending(self.pool, self.user["id"]), 1)
 
     async def test_health(self) -> None:
