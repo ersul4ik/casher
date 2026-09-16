@@ -1,0 +1,27 @@
+# Blueprint для Render. Значения с sync: false вводятся в дашборде вручную.
+services:
+  - type: web
+    name: cacher-bot
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.main
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.6"
+      - key: BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: BASE_URL
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: DEFAULT_CURRENCY
+        value: KGS
+      - key: DEFAULT_TZ_MINUTES
+        value: "360"
