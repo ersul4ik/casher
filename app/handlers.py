@@ -97,6 +97,8 @@ def _spend_text(
         head = f"💸 {amount} — <b>без категории</b>"
 
     lines = [head]
+    if spend["merchant"]:
+        lines.append(f"📍 {html.escape(spend['merchant'])}")
     if tags:
         lines.append("🏷 " + ", ".join(html.escape(tag["name"]) for tag in tags))
     if spend["note"]:
@@ -339,10 +341,13 @@ async def cmd_pending(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) ->
     categories = await db.list_categories(pool, user["id"])
     for spend in rows:
         when = _local(spend["occurred_at"], user).strftime("%d.%m %H:%M")
+        suggested_id = await db.suggest_category(
+            pool, user["id"], merchant=spend["merchant"], amount=spend["amount"]
+        )
+        suggested_name = next((c["name"] for c in categories if c["id"] == suggested_id), None)
         await msg.answer(
-            f"💸 <b>{money(spend['amount'])} {html.escape(spend['currency'])}</b>\n"
-            f"<i>{when}</i>\nКуда записать?",
-            reply_markup=keyboards.category_picker(spend["id"], categories),
+            f"{notifier.spend_prompt(spend, suggested_name)}\n<i>{when}</i>",
+            reply_markup=keyboards.category_picker(spend["id"], categories, suggested_id),
         )
 
 
@@ -396,6 +401,8 @@ async def cb_edit(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -
         cb, notifier.spend_prompt(spend), keyboards.category_picker(spend_id, categories)
     )
     await cb.answer()
+
+
 
 
 @router.callback_query(F.data.startswith("del:"))
@@ -619,7 +626,10 @@ async def cmd_export(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(
-        ["datetime", "amount", "currency", "category", "tags", "note", "status", "source", "raw"]
+        [
+            "datetime", "amount", "currency", "category", "merchant",
+            "tags", "note", "status", "source", "raw",
+        ]
     )
     for row in rows:
         writer.writerow(
@@ -628,6 +638,7 @@ async def cmd_export(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> 
                 f"{row['amount']:.2f}",
                 row["currency"],
                 row["category"],
+                row["merchant"],
                 row["tags"],
                 row["note"],
                 row["status"],

@@ -218,14 +218,15 @@ async def create_spend(
     source: str,
     occurred_at: datetime | None = None,
     category_id: int | None = None,
+    merchant: str | None = None,
 ) -> asyncpg.Record:
     status = "done" if category_id is not None else "pending"
     return await pool.fetchrow(
         """
         INSERT INTO spends (user_id, category_id, amount, currency, raw, source,
-                            occurred_at, status, categorized_at)
+                            occurred_at, status, categorized_at, merchant)
         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now()), $8,
-                CASE WHEN $2::bigint IS NULL THEN NULL ELSE now() END)
+                CASE WHEN $2::bigint IS NULL THEN NULL ELSE now() END, $9)
         RETURNING *
         """,
         user_id,
@@ -236,6 +237,46 @@ async def create_spend(
         source,
         occurred_at,
         status,
+        merchant,
+    )
+
+
+async def suggest_category(
+    pool: asyncpg.Pool, user_id: int, *, merchant: str | None, amount: Decimal
+) -> int | None:
+    """Guess the category from this user's own history.
+
+    The shop name is a far stronger signal than the amount, so it wins when present. The
+    amount only counts once it has been filed the same way at least twice — a single past
+    coincidence is not a habit.
+    """
+    if merchant:
+        by_merchant = await pool.fetchval(
+            """
+            SELECT category_id FROM spends
+             WHERE user_id = $1 AND status = 'done' AND category_id IS NOT NULL
+               AND lower(merchant) = lower($2)
+             GROUP BY category_id
+             ORDER BY count(*) DESC, max(occurred_at) DESC
+             LIMIT 1
+            """,
+            user_id,
+            merchant,
+        )
+        if by_merchant is not None:
+            return by_merchant
+
+    return await pool.fetchval(
+        """
+        SELECT category_id FROM spends
+         WHERE user_id = $1 AND status = 'done' AND category_id IS NOT NULL AND amount = $2
+         GROUP BY category_id
+        HAVING count(*) >= 2
+         ORDER BY count(*) DESC, max(occurred_at) DESC
+         LIMIT 1
+        """,
+        user_id,
+        amount,
     )
 
 
@@ -546,6 +587,7 @@ async def export_rows(pool: asyncpg.Pool, user_id: int) -> list[asyncpg.Record]:
         """
         SELECT s.occurred_at, s.amount, s.currency, s.status, s.source,
                COALESCE(c.name, '') AS category,
+               COALESCE(s.merchant, '') AS merchant,
                COALESCE(
                    (SELECT string_agg(t.name, ', ' ORDER BY t.name)
                       FROM spend_tags st JOIN tags t ON t.id = st.tag_id

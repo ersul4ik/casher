@@ -12,7 +12,13 @@ from decimal import Decimal
 from app import keyboards
 from app.db import normalize_dsn
 from app.reports import money, period_title, resolve_period
-from app.webapi import amount_from_raw, currency_from_raw, is_not_a_spend, parse_amount
+from app.webapi import (
+    amount_from_raw,
+    currency_from_raw,
+    is_not_a_spend,
+    merchant_from_raw,
+    parse_amount,
+)
 
 REAL_PUSH = "Успещная операция по QR. Сумма: 1470.00 KGS"
 BISHKEK = 360
@@ -68,6 +74,29 @@ class TestAmountParsing(unittest.TestCase):
         self.assertEqual(currency_from_raw(REAL_PUSH), "KGS")
         self.assertEqual(currency_from_raw("charge 10.00 usd"), "USD")
         self.assertIsNone(currency_from_raw("нет валюты"))
+
+
+class TestApplePayPush(unittest.TestCase):
+    """Wallet lays an Apple Pay push out as bank / shop / amount."""
+
+    PUSH = "OPTIMA BANK OJSC\nArabesk  Bishkek\n470,00 KGS"
+
+    def test_amount_and_currency(self) -> None:
+        self.assertEqual(amount_from_raw(self.PUSH), Decimal("470.00"))
+        self.assertEqual(currency_from_raw(self.PUSH), "KGS")
+
+    def test_merchant_extracted_and_whitespace_collapsed(self) -> None:
+        self.assertEqual(merchant_from_raw(self.PUSH), "Arabesk Bishkek")
+
+    def test_bank_name_is_not_a_merchant(self) -> None:
+        for line in ("OPTIMA BANK OJSC", "ОАО Оптима Банк", "Optima24"):
+            self.assertIsNone(merchant_from_raw(line), line)
+
+    def test_qr_push_has_no_merchant(self) -> None:
+        self.assertIsNone(merchant_from_raw(REAL_PUSH))
+
+    def test_amount_only_line_is_not_a_merchant(self) -> None:
+        self.assertIsNone(merchant_from_raw("470,00 KGS"))
 
 
 class TestMenuButtons(unittest.TestCase):

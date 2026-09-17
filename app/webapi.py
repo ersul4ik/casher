@@ -31,6 +31,9 @@ CURRENCY_RE = re.compile(r"\b(KGS|USD|EUR|RUB|KZT|UZS|GBP|TRY)\b", re.IGNORECASE
 
 # Failed, declined or cancelled operations move no money, so they are not spends.
 # The bank sends them through the same channel, e.g. "Не исполнен. Проверьте реквизиты."
+# The bank's own name is not a merchant: Wallet puts it on the first line of every push.
+BANK_NAME_RE = re.compile(r"\bbank\b|\bбанк|optima|ojsc|оао|зао|осоо", re.IGNORECASE)
+
 NOT_A_SPEND_RE = re.compile(
     r"не\s*исполнен|отклон|отказ|неуспешн|не\s*удал|ошибк|недостаточно|отмен",
     re.IGNORECASE,
@@ -64,6 +67,30 @@ def amount_from_raw(raw: str) -> Decimal | None:
 def is_not_a_spend(raw: str) -> bool:
     """True for pushes that report a failed operation rather than a payment."""
     return bool(NOT_A_SPEND_RE.search(raw))
+
+
+def merchant_from_raw(raw: str) -> str | None:
+    """Recover the shop name from an Apple Pay push sent as one blob of text.
+
+    Wallet lays such a push out as three lines — bank, shop, amount:
+
+        OPTIMA BANK OJSC
+        Arabesk  Bishkek
+        470,00 KGS
+
+    The shortcut can pass the subtitle as `merchant` instead, which is more reliable; this
+    is the fallback for when it sends the whole notification and nothing else.
+    """
+    for line in raw.splitlines():
+        candidate = " ".join(line.split())
+        if not candidate or BANK_NAME_RE.search(candidate):
+            continue
+        if AMOUNT_LABELLED_RE.search(candidate) or AMOUNT_ANY_RE.search(candidate):
+            continue
+        if not any(ch.isalpha() for ch in candidate):
+            continue
+        return candidate[:64]
+    return None
 
 
 def currency_from_raw(raw: str) -> str | None:
@@ -130,6 +157,7 @@ async def handle_spend(request: web.Request) -> web.Response:
     if duplicate is not None:
         return web.json_response({"status": "duplicate", "id": duplicate["id"]})
 
+    merchant = str(data.get("merchant") or "").strip()[:64] or merchant_from_raw(raw)
     spend = await db.create_spend(
         pool,
         user_id=user["id"],
@@ -138,6 +166,7 @@ async def handle_spend(request: web.Request) -> web.Response:
         raw=raw or None,
         source=str(data.get("source") or "shortcut")[:32],
         occurred_at=_parse_occurred_at(data.get("occurred_at")),
+        merchant=merchant,
     )
     try:
         await notifier.ask_category(bot, pool, user, spend)

@@ -74,3 +74,11 @@ CREATE TABLE IF NOT EXISTS spend_tags (
 );
 
 CREATE INDEX IF NOT EXISTS spend_tags_tag_idx ON spend_tags (tag_id, spend_id);
+
+-- Apple Pay pushes name the shop ("Arabesk Bishkek"), which QR pushes never do.
+-- Added separately because CREATE TABLE IF NOT EXISTS never alters an existing table.
+ALTER TABLE spends ADD COLUMN IF NOT EXISTS merchant TEXT;
+
+-- Serves the category suggestion: what this user usually files this shop under.
+CREATE INDEX IF NOT EXISTS spends_merchant_idx
+    ON spends (user_id, lower(merchant), status);

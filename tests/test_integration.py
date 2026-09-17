@@ -406,6 +406,82 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["tags"], "вода, кофе")
         self.assertEqual(row["note"], "по дороге домой")
 
+    async def test_category_suggested_from_merchant_history(self) -> None:
+        user, _ = await self.make_user(1030)
+        categories = await db.list_categories(self.pool, user["id"])
+        cafe, shop = categories[0], categories[2]
+
+        async def spend(amount: str, merchant: str | None, category) -> None:
+            row = await db.create_spend(
+                self.pool,
+                user_id=user["id"],
+                amount=Decimal(amount),
+                currency="KGS",
+                raw=None,
+                source="shortcut",
+                merchant=merchant,
+            )
+            await db.set_category(self.pool, user["id"], row["id"], category["id"])
+
+        await spend("470.00", "Arabesk Bishkek", cafe)
+        # The shop wins over the amount even when the amount points elsewhere.
+        await spend("470.00", None, shop)
+        await spend("470.00", None, shop)
+
+        self.assertEqual(
+            await db.suggest_category(
+                self.pool, user["id"], merchant="arabesk bishkek", amount=Decimal("999.00")
+            ),
+            cafe["id"],
+        )
+        # Unknown shop falls back to the amount, which now has two matching records.
+        self.assertEqual(
+            await db.suggest_category(
+                self.pool, user["id"], merchant="Совсем новое место", amount=Decimal("470.00")
+            ),
+            shop["id"],
+        )
+
+    async def test_single_past_match_is_not_enough_to_suggest(self) -> None:
+        user, _ = await self.make_user(1031)
+        category = (await db.list_categories(self.pool, user["id"]))[0]
+        row = await db.create_spend(
+            self.pool,
+            user_id=user["id"],
+            amount=Decimal("35.00"),
+            currency="KGS",
+            raw=None,
+            source="manual",
+        )
+        await db.set_category(self.pool, user["id"], row["id"], category["id"])
+        # One coincidence is not a habit — no suggestion yet.
+        self.assertIsNone(
+            await db.suggest_category(
+                self.pool, user["id"], merchant=None, amount=Decimal("35.00")
+            )
+        )
+
+    async def test_suggestions_do_not_cross_users(self) -> None:
+        alice, _ = await self.make_user(1032)
+        bob, _ = await self.make_user(1033)
+        alice_cat = (await db.list_categories(self.pool, alice["id"]))[0]
+        row = await db.create_spend(
+            self.pool,
+            user_id=alice["id"],
+            amount=Decimal("470.00"),
+            currency="KGS",
+            raw=None,
+            source="shortcut",
+            merchant="Arabesk Bishkek",
+        )
+        await db.set_category(self.pool, alice["id"], row["id"], alice_cat["id"])
+
+        self.assertIsNone(
+            await db.suggest_category(
+                self.pool, bob["id"], merchant="Arabesk Bishkek", amount=Decimal("470.00")
+            )
+        )
+
     async def test_admin_stats(self) -> None:
         user, _ = await self.make_user(1013)
         await db.create_spend(

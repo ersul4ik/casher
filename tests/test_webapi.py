@@ -166,6 +166,29 @@ class SpendEndpointTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(oversized.status, 413)
 
+    async def test_apple_pay_push_records_the_merchant(self) -> None:
+        response = await self.client.post(
+            "/spend",
+            json={"raw": "OPTIMA BANK OJSC\nArabesk  Bishkek\n470,00 KGS"},
+            headers=self.auth(),
+        )
+        payload = await response.json()
+        spend = await db.get_spend(self.pool, self.user["id"], payload["id"])
+        self.assertEqual(str(spend["amount"]), "470.00")
+        self.assertEqual(spend["currency"], "KGS")
+        self.assertEqual(spend["merchant"], "Arabesk Bishkek")
+        self.assertIn("Arabesk Bishkek", self.bot.sent[0][1])
+
+    async def test_explicit_merchant_field_wins(self) -> None:
+        response = await self.client.post(
+            "/spend",
+            json={"raw": "OPTIMA BANK OJSC\nArabesk  Bishkek\n470,00 KGS", "merchant": "Arabesk"},
+            headers=self.auth(),
+        )
+        payload = await response.json()
+        spend = await db.get_spend(self.pool, self.user["id"], payload["id"])
+        self.assertEqual(spend["merchant"], "Arabesk")
+
     async def test_failed_operation_push_is_skipped(self) -> None:
         """The real "payment not executed" push must not become a spend of 557 277 896."""
         response = await self.client.post(

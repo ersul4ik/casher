@@ -45,9 +45,25 @@ def main_menu() -> ReplyKeyboardMarkup:
     )
 
 
-def category_picker(spend_id: int, categories: list[asyncpg.Record]) -> InlineKeyboardMarkup:
+def category_picker(
+    spend_id: int, categories: list[asyncpg.Record], suggested_id: int | None = None
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
+
+    # The guess gets a wide button of its own on top; the rest keep their usual order.
+    suggested = next((c for c in categories if c["id"] == suggested_id), None)
+    if suggested is not None:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"⭐ {suggested['name']}",
+                    callback_data=f"cat:{spend_id}:{suggested['id']}",
+                )
+            ]
+        )
+        categories = [c for c in categories if c["id"] != suggested_id]
+
     for category in categories:
         row.append(
             InlineKeyboardButton(

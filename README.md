@@ -63,6 +63,19 @@ The schema is created on start, so there is nothing to migrate by hand.
 A spend can also be entered by hand: send `1470`, or `1470 кафе` to have the category matched by
 the start of its name.
 
+## Where spends come from
+
+Two kinds of push, two Shortcuts automations — see [docs/SHORTCUT.md](docs/SHORTCUT.md):
+
+| Payment | Pushed by | Text |
+|---|---|---|
+| QR payments, transfers | the bank's app | `Успещная операция по QR. Сумма: 1470.00 KGS` |
+| Apple Pay card payments | **Wallet** | `OPTIMA BANK OJSC` / `Arabesk Bishkek` / `470,00 KGS` |
+
+The shortcut does not need to filter anything: the bot drops pushes about failed operations and
+refuses to read account or phone numbers as amounts. Apple Pay pushes also name the shop, and the
+bot remembers which category that shop usually gets, offering it first with a ⭐ next time.
+
 ## Categories and tags
 
 A spend has exactly one category and any number of tags. The category answers "where did it go"
@@ -100,6 +113,7 @@ currency out of the push text itself, which keeps the shortcut down to a single 
 | `raw` | no* | the full push text, stored verbatim |
 | `amount` | no* | a number; taken from `raw` when absent |
 | `currency` | no | defaults to the user's currency |
+| `merchant` | no | shop name; recovered from `raw` when the push carries one |
 | `occurred_at` | no | ISO-8601, when the operation time differs from the request time |
 | `source` | no | free-form origin label, `shortcut` by default |
 
@@ -150,8 +164,8 @@ docs/           DEPLOY.md and SHORTCUT.md
 `users` — `tg_id`, `api_token`, `currency`, `tz_minutes`, `created_at`, `last_seen_at`.
 `categories` — per user, unique case-insensitively; deleting archives rather than drops.
 `spends` — `user_id`, `category_id`, `amount NUMERIC(14,2)`, `currency`, `status`
-(`pending` / `done` / `ignored`), `source`, `raw`, `note`, `occurred_at`, `created_at`,
-`categorized_at`.
+(`pending` / `done` / `ignored`), `source`, `raw`, `merchant`, `note`, `occurred_at`,
+`created_at`, `categorized_at`.
 `tags` + `spend_tags` — a user's tags and their many-to-many link to spends. Deleting a spend
 drops its links; the tags themselves survive for future spends.
 
@@ -166,25 +180,17 @@ be recomputed.
 Ordered by value, not by effort. Nothing here is a new kind of report — the point is to cut the
 work the user has to do.
 
-### Auto-categorisation
+### Auto-categorisation — refinements
 
-The single most valuable addition. Right now every spend costs a button press, even when the
-answer is always the same.
+The basics ship already: the bot suggests a category from the user's own history, marking it with
+a ⭐ on a wide button of its own. The merchant wins when known; otherwise the amount decides, and
+only once it has been filed the same way at least twice.
 
-- **By amount, available today.** The push carries nothing but a number, so the bot learns from
-  history: if 350 KGS has been filed under Кофейня four times, offer Кофейня as the first button.
-  Time of day sharpens this further — 350 in the morning is coffee, in the evening it is not.
-- **By merchant, once Apple Pay pushes are parsed.** Those carry the shop name, which is a far
-  stronger signal than the amount. Remember merchant → category and pre-fill it.
-- Should always stay a suggestion that can be overridden, never a silent decision.
+What is still worth adding:
 
-### Apple Pay push format
-
-Apple Pay payments produce a different push, which also contains an amount. Worth doing as a
-general rewrite: a list of parsing rules instead of one regex, plus a `merchant` column on
-`spends`. That column is what feeds merchant-based auto-categorisation above.
-
-Needs sample texts of those pushes collected first.
+- **Time of day.** 350 in the morning is coffee, the same 350 in the evening is not.
+- **Silent auto-fill for the obvious cases.** After a merchant has been filed the same way many
+  times, record it without asking and let the card be corrected afterwards.
 
 ### Limits and alerts
 
