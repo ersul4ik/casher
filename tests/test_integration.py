@@ -16,7 +16,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from app import db
-from app.reports import build_report, build_tag_report, resolve_period
+from app.reports import build_entity_summary, build_report, build_tag_report, resolve_period
 
 TEST_DSN = os.environ.get("TEST_DATABASE_URL", "")
 BISHKEK = 360
@@ -480,6 +480,65 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
             await db.suggest_category(
                 self.pool, bob["id"], merchant="Arabesk Bishkek", amount=Decimal("470.00")
             )
+        )
+
+    async def test_entity_summary_works_the_same_for_categories_and_tags(self) -> None:
+        user, _ = await self.make_user(1040)
+        category = (await db.list_categories(self.pool, user["id"]))[0]
+        tag = await db.ensure_tag(self.pool, user["id"], "кофе")
+
+        for amount in ("120.00", "80.00"):
+            row = await db.create_spend(
+                self.pool,
+                user_id=user["id"],
+                amount=Decimal(amount),
+                currency="KGS",
+                raw=None,
+                source="manual",
+                category_id=category["id"],
+            )
+            await db.attach_tag(self.pool, user["id"], row["id"], tag["id"])
+
+        # One more spend in the category only, so the two slices must differ.
+        await db.create_spend(
+            self.pool,
+            user_id=user["id"],
+            amount=Decimal("50.00"),
+            currency="KGS",
+            raw=None,
+            source="manual",
+            category_id=category["id"],
+        )
+
+        by_category = await db.entity_totals(self.pool, user["id"], "cat", category["id"])
+        self.assertEqual(by_category[0]["total"], Decimal("250.00"))
+        self.assertEqual(by_category[0]["n"], 3)
+
+        by_tag = await db.entity_totals(self.pool, user["id"], "tag", tag["id"])
+        self.assertEqual(by_tag[0]["total"], Decimal("200.00"))
+        self.assertEqual(by_tag[0]["n"], 2)
+
+        self.assertEqual(len(await db.entity_recent(self.pool, user["id"], "tag", tag["id"])), 2)
+
+        text = await build_entity_summary(self.pool, user, "cat", category["id"])
+        self.assertIn("250", text)
+        self.assertIn("За всё время", text)
+        self.assertIn("Последние", text)
+
+        tag_text = await build_entity_summary(self.pool, user, "tag", tag["id"])
+        self.assertIn("кофе", tag_text)
+        self.assertIn("200", tag_text)
+
+    async def test_entity_summary_refuses_someone_elses_entity(self) -> None:
+        alice, _ = await self.make_user(1041)
+        bob, _ = await self.make_user(1042)
+        alice_cat = (await db.list_categories(self.pool, alice["id"]))[0]
+        alice_tag = await db.ensure_tag(self.pool, alice["id"], "вода")
+
+        self.assertIsNone(await build_entity_summary(self.pool, bob, "cat", alice_cat["id"]))
+        self.assertIsNone(await build_entity_summary(self.pool, bob, "tag", alice_tag["id"]))
+        self.assertEqual(
+            await db.entity_totals(self.pool, bob["id"], "cat", alice_cat["id"]), []
         )
 
     async def test_admin_stats(self) -> None:

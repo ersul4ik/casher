@@ -20,11 +20,21 @@ BTN_WEEK = "📊 Неделя"
 BTN_MONTH = "📊 Месяц"
 BTN_PENDING = "⏳ Без категории"
 BTN_CATEGORIES = "📁 Категории"
+BTN_TAGS = "🏷 Теги"
 BTN_LAST = "🧾 Последние"
 BTN_EXPORT = "⬇️ CSV"
 
 MENU_BUTTONS = frozenset(
-    {BTN_DAY, BTN_WEEK, BTN_MONTH, BTN_PENDING, BTN_CATEGORIES, BTN_LAST, BTN_EXPORT}
+    {
+        BTN_DAY,
+        BTN_WEEK,
+        BTN_MONTH,
+        BTN_PENDING,
+        BTN_CATEGORIES,
+        BTN_TAGS,
+        BTN_LAST,
+        BTN_EXPORT,
+    }
 )
 
 
@@ -38,7 +48,11 @@ def main_menu() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_DAY), KeyboardButton(text=BTN_WEEK), KeyboardButton(text=BTN_MONTH)],
             [KeyboardButton(text=BTN_PENDING), KeyboardButton(text=BTN_LAST)],
-            [KeyboardButton(text=BTN_CATEGORIES), KeyboardButton(text=BTN_EXPORT)],
+            [
+                KeyboardButton(text=BTN_CATEGORIES),
+                KeyboardButton(text=BTN_TAGS),
+                KeyboardButton(text=BTN_EXPORT),
+            ],
         ],
         resize_keyboard=True,
         input_field_placeholder="Сумма и категория, например: 350 кофейня",
@@ -191,13 +205,29 @@ def report_menu() -> InlineKeyboardMarkup:
     )
 
 
-def categories_manager(categories: list[asyncpg.Record]) -> InlineKeyboardMarkup:
+def entity_manager(kind: str, entities: list[asyncpg.Record]) -> InlineKeyboardMarkup:
+    """The list of categories or tags: tap a name for its totals, the bin to remove it."""
     rows = [
         [
-            InlineKeyboardButton(text=category["name"], callback_data="noop"),
-            InlineKeyboardButton(text="🗑", callback_data=f"catdel:{category['id']}"),
+            InlineKeyboardButton(
+                text=entity["name"], callback_data=f"{kind}sum:{entity['id']}"
+            ),
+            InlineKeyboardButton(text="🗑", callback_data=f"{kind}del:{entity['id']}"),
         ]
-        for category in categories
+        for entity in entities
     ]
-    rows.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="catadd")])
+    if kind == "cat":
+        rows.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="catadd")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def entity_summary_nav(kind: str, entity_id: int) -> InlineKeyboardMarkup:
+    back = "📁 К категориям" if kind == "cat" else "🏷 К тегам"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=back, callback_data=f"{kind}list"),
+                InlineKeyboardButton(text="🗑 Удалить", callback_data=f"{kind}del:{entity_id}"),
+            ]
+        ]
+    )

@@ -564,6 +564,66 @@ async def report_by_tag(
     )
 
 
+def _entity_source(kind: str) -> tuple[str, str]:
+    """Categories and tags differ only in how a spend is linked to them."""
+    if kind == "tag":
+        return "spends s JOIN spend_tags st ON st.spend_id = s.id AND st.tag_id = $2", "TRUE"
+    return "spends s", "s.category_id = $2"
+
+
+async def entity_name(
+    pool: asyncpg.Pool, user_id: int, kind: str, entity_id: int
+) -> str | None:
+    table = "tags" if kind == "tag" else "categories"
+    return await pool.fetchval(
+        f"SELECT name FROM {table} WHERE id = $1 AND user_id = $2", entity_id, user_id
+    )
+
+
+async def entity_totals(
+    pool: asyncpg.Pool,
+    user_id: int,
+    kind: str,
+    entity_id: int,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> list[asyncpg.Record]:
+    source, condition = _entity_source(kind)
+    return await pool.fetch(
+        f"""
+        SELECT s.currency, sum(s.amount) AS total, count(*) AS n
+          FROM {source}
+         WHERE s.user_id = $1 AND {condition} AND s.status = 'done'
+           AND ($3::timestamptz IS NULL OR s.occurred_at >= $3)
+           AND ($4::timestamptz IS NULL OR s.occurred_at < $4)
+         GROUP BY s.currency
+         ORDER BY total DESC
+        """,
+        user_id,
+        entity_id,
+        start,
+        end,
+    )
+
+
+async def entity_recent(
+    pool: asyncpg.Pool, user_id: int, kind: str, entity_id: int, limit: int = 5
+) -> list[asyncpg.Record]:
+    source, condition = _entity_source(kind)
+    return await pool.fetch(
+        f"""
+        SELECT s.id, s.amount, s.currency, s.occurred_at, s.merchant, s.note
+          FROM {source}
+         WHERE s.user_id = $1 AND {condition} AND s.status = 'done'
+         ORDER BY s.occurred_at DESC
+         LIMIT $3
+        """,
+        user_id,
+        entity_id,
+        limit,
+    )
+
+
 async def count_untagged(
     pool: asyncpg.Pool, user_id: int, start: datetime, end: datetime
 ) -> int:

@@ -23,7 +23,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message, TelegramObj
 
 from . import db, keyboards, notifier
 from .config import Config
-from .reports import build_report, build_tag_report, money, user_tz
+from .reports import build_entity_summary, build_report, build_tag_report, money, user_tz
 
 router = Router()
 
@@ -211,7 +211,8 @@ async def cmd_help(msg: Message) -> None:
         "⏳ /pending — разметить траты, оставшиеся без категории\n"
         "🧾 /last — последние траты: открыть по номеру, поставить теги, "
         "дописать описание или удалить\n"
-        "📁 /cats — категории: добавить, убрать\n"
+        "📁 /cats — категории: нажми на название, чтобы увидеть траты по ней\n"
+        "🏷 /tags — то же самое по тегам\n"
         "⬇️ /export — выгрузка всех трат в CSV\n"
         "⚙️ /settings — валюта и часовой пояс\n"
         "🔑 /token — токен для шортката, /newtoken — выпустить новый\n\n"
@@ -548,15 +549,61 @@ async def cb_new_category(cb: CallbackQuery, state: FSMContext) -> None:
 # --- categories --------------------------------------------------------------
 
 
+CATEGORY_LIST_TEXT = (
+    "📁 <b>Категории</b>\n\nНажми на название — покажу, сколько на неё ушло. "
+    "Корзина прячет категорию из кнопок, уже размеченные траты остаются на месте."
+)
+TAG_LIST_TEXT = (
+    "🏷 <b>Теги</b>\n\nНажми на тег — покажу, сколько на него ушло. "
+    "Корзина удаляет тег вместе с его отметками на тратах, сами траты остаются."
+)
+
+
+async def _entity_list(pool: asyncpg.Pool, user: asyncpg.Record, kind: str):
+    if kind == "tag":
+        return TAG_LIST_TEXT, await db.list_tags(pool, user["id"], limit=50)
+    return CATEGORY_LIST_TEXT, await db.list_categories(pool, user["id"])
+
+
 @router.message(Command("cats"))
 @router.message(F.text == keyboards.BTN_CATEGORIES)
 async def cmd_categories(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
-    categories = await db.list_categories(pool, user["id"])
-    await msg.answer(
-        "📁 <b>Категории</b>\n\nУдаление прячет категорию из кнопок, "
-        "уже размеченные траты остаются на месте.",
-        reply_markup=keyboards.categories_manager(categories),
-    )
+    text, categories = await _entity_list(pool, user, "cat")
+    await msg.answer(text, reply_markup=keyboards.entity_manager("cat", categories))
+
+
+@router.message(Command("tags"))
+@router.message(F.text == keyboards.BTN_TAGS)
+async def cmd_tags(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    text, tags = await _entity_list(pool, user, "tag")
+    if not tags:
+        await msg.answer(
+            "Тегов пока нет. Они ставятся под тратой кнопкой «🏷 Теги» — "
+            "например, <i>вода</i>, <i>кофе</i>, <i>курут</i>."
+        )
+        return
+    await msg.answer(text, reply_markup=keyboards.entity_manager("tag", tags))
+
+
+@router.callback_query(F.data.in_({"catlist", "taglist"}))
+async def cb_entity_list(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    kind = "tag" if cb.data.startswith("tag") else "cat"
+    text, entities = await _entity_list(pool, user, kind)
+    await _safe_edit(cb, text, keyboards.entity_manager(kind, entities))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith(("catsum:", "tagsum:")))
+async def cb_entity_summary(
+    cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
+    kind, raw_id = cb.data.split("sum:", 1)
+    text = await build_entity_summary(pool, user, kind, int(raw_id))
+    if text is None:
+        await cb.answer("Не нашёл", show_alert=True)
+        return
+    await _safe_edit(cb, text, keyboards.entity_summary_nav(kind, int(raw_id)))
+    await cb.answer()
 
 
 @router.callback_query(F.data == "catadd")
@@ -567,18 +614,18 @@ async def cb_category_add(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-@router.callback_query(F.data.startswith("catdel:"))
-async def cb_category_delete(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
-    category_id = int(cb.data.split(":", 1)[1])
-    name = await db.archive_category(pool, user["id"], category_id)
-    categories = await db.list_categories(pool, user["id"])
-    await _safe_edit(
-        cb,
-        "📁 <b>Категории</b>\n\nУдаление прячет категорию из кнопок, "
-        "уже размеченные траты остаются на месте.",
-        keyboards.categories_manager(categories),
-    )
-    await cb.answer(f"Убрал: {name}" if name else "Не нашёл категорию")
+@router.callback_query(F.data.startswith(("catdel:", "tagdel:")))
+async def cb_entity_delete(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    kind, raw_id = cb.data.split("del:", 1)
+    entity_id = int(raw_id)
+    if kind == "tag":
+        name = await db.delete_tag(pool, user["id"], entity_id)
+    else:
+        name = await db.archive_category(pool, user["id"], entity_id)
+
+    text, entities = await _entity_list(pool, user, kind)
+    await _safe_edit(cb, text, keyboards.entity_manager(kind, entities))
+    await cb.answer(f"Убрал: {name}" if name else "Не нашёл")
 
 
 @router.message(StateFilter(Flow.category_name))

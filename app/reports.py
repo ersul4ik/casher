@@ -194,6 +194,49 @@ async def build_report(
     return "\n".join(lines)
 
 
+def _totals_line(rows: list[asyncpg.Record]) -> str:
+    if not rows:
+        return "—"
+    parts = [f"{money(r['total'])} {html.escape(r['currency'])} ({r['n']})" for r in rows]
+    return " · ".join(parts)
+
+
+async def build_entity_summary(
+    pool: asyncpg.Pool, user: asyncpg.Record, kind: str, entity_id: int
+) -> str | None:
+    """How much went into one category or one tag. None when it is not the user's."""
+    name = await db.entity_name(pool, user["id"], kind, entity_id)
+    if name is None:
+        return None
+
+    icon = "🏷" if kind == "tag" else "📁"
+    lines = [f"{icon} <b>{html.escape(name)}</b>", ""]
+
+    for label, period_kind in (("Сегодня", "day"), ("Неделя", "week"), ("Месяц", "month")):
+        period = resolve_period(period_kind, 0, user["tz_minutes"])
+        rows = await db.entity_totals(
+            pool, user["id"], kind, entity_id, period.start, period.end
+        )
+        lines.append(f"{label}: <b>{_totals_line(rows)}</b>")
+
+    overall = await db.entity_totals(pool, user["id"], kind, entity_id)
+    lines.append(f"За всё время: <b>{_totals_line(overall)}</b>")
+
+    recent = await db.entity_recent(pool, user["id"], kind, entity_id)
+    if recent:
+        tz = user_tz(user["tz_minutes"])
+        lines += ["", "<b>Последние:</b>"]
+        for spend in recent:
+            when = spend["occurred_at"].astimezone(tz).strftime("%d.%m %H:%M")
+            detail = spend["merchant"] or spend["note"] or ""
+            tail = f" — {html.escape(detail)}" if detail else ""
+            lines.append(
+                f"<code>{when}</code>  {money(spend['amount'])} "
+                f"{html.escape(spend['currency'])}{tail}"
+            )
+    return "\n".join(lines)
+
+
 async def build_tag_report(
     pool: asyncpg.Pool, user: asyncpg.Record, kind: str, offset: int
 ) -> str:
