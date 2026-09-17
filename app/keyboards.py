@@ -23,6 +23,15 @@ BTN_CATEGORIES = "📁 Категории"
 BTN_LAST = "🧾 Последние"
 BTN_EXPORT = "⬇️ CSV"
 
+MENU_BUTTONS = frozenset(
+    {BTN_DAY, BTN_WEEK, BTN_MONTH, BTN_PENDING, BTN_CATEGORIES, BTN_LAST, BTN_EXPORT}
+)
+
+
+def is_menu_button(text: str | None) -> bool:
+    """Menu taps arrive as ordinary text, so a dialog waiting for input must let them through."""
+    return bool(text) and text.strip() in MENU_BUTTONS
+
 
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(

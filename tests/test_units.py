@@ -9,6 +9,7 @@ import unittest
 from datetime import timedelta
 from decimal import Decimal
 
+from app import keyboards
 from app.db import normalize_dsn
 from app.reports import money, period_title, resolve_period
 from app.webapi import amount_from_raw, currency_from_raw, is_not_a_spend, parse_amount
@@ -67,6 +68,23 @@ class TestAmountParsing(unittest.TestCase):
         self.assertEqual(currency_from_raw(REAL_PUSH), "KGS")
         self.assertEqual(currency_from_raw("charge 10.00 usd"), "USD")
         self.assertIsNone(currency_from_raw("нет валюты"))
+
+
+class TestMenuButtons(unittest.TestCase):
+    """A dialog waiting for text must recognise menu taps and step aside."""
+
+    def test_every_menu_caption_is_recognised(self) -> None:
+        for caption in keyboards.MENU_BUTTONS:
+            self.assertTrue(keyboards.is_menu_button(caption), caption)
+
+    def test_export_button_is_not_mistaken_for_a_note(self) -> None:
+        # The bug this guards: tapping "⬇️ CSV" while entering a note stored the caption.
+        self.assertTrue(keyboards.is_menu_button(keyboards.BTN_EXPORT))
+        self.assertTrue(keyboards.is_menu_button(f"  {keyboards.BTN_EXPORT} "))
+
+    def test_ordinary_text_passes_through(self) -> None:
+        for text in ("Швепс, лёд", "две бутылки воды", "CSV", "", None):
+            self.assertFalse(keyboards.is_menu_button(text), text)
 
 
 class TestMoney(unittest.TestCase):

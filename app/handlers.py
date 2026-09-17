@@ -54,10 +54,14 @@ class UserMiddleware(BaseMiddleware):
         if tg_user is None or tg_user.is_bot:
             return await handler(event, data)
 
-        # A command always aborts an unfinished dialog, such as typing a category name.
+        # A command or a menu tap always aborts an unfinished dialog, such as typing a
+        # category name. Menu buttons arrive as plain text, so without this the caption
+        # itself ends up stored as the note.
         state: FSMContext | None = data.get("state")
-        if state is not None and isinstance(event, Message) and (event.text or "").startswith("/"):
-            await state.clear()
+        if state is not None and isinstance(event, Message):
+            text = event.text or ""
+            if text.startswith("/") or keyboards.is_menu_button(text):
+                await state.clear()
 
         config: Config = data["config"]
         user, created = await db.get_or_create_user(
@@ -460,7 +464,8 @@ async def cb_new_tags(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(spend_id=spend_id)
     await cb.message.answer(
         "Какие теги добавить? Можно несколько через запятую:\n"
-        "<code>вода, кофе, курут</code>"
+        "<code>вода, кофе, курут</code>\n"
+        "Отменить — нажать кнопку меню."
     )
     await cb.answer()
 
@@ -501,7 +506,7 @@ async def cb_note(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(spend_id=spend_id)
     await cb.message.answer(
         "Напиши описание траты — что именно купил.\n"
-        "Чтобы стереть прежнее описание, отправь <code>-</code>"
+        "Стереть прежнее — отправить <code>-</code>, отменить — нажать кнопку меню."
     )
     await cb.answer()
 
