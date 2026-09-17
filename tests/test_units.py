@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from app.db import normalize_dsn
 from app.reports import money, period_title, resolve_period
-from app.webapi import amount_from_raw, currency_from_raw, parse_amount
+from app.webapi import amount_from_raw, currency_from_raw, is_not_a_spend, parse_amount
 
 REAL_PUSH = "Успещная операция по QR. Сумма: 1470.00 KGS"
 BISHKEK = 360
@@ -39,6 +39,29 @@ class TestAmountParsing(unittest.TestCase):
 
     def test_amount_without_label(self) -> None:
         self.assertEqual(amount_from_raw("Оплата 250.75 KGS"), Decimal("250.75"))
+
+    def test_account_numbers_are_not_amounts(self) -> None:
+        """A failed-payment push carries a phone number; it must not become a spend."""
+        push = (
+            "Платеж: Мобильная связь\nРеквизиты: 557277896\n"
+            "Не исполнен.\nПроверьте корректность реквизитов."
+        )
+        self.assertIsNone(amount_from_raw(push))
+        self.assertIsNone(amount_from_raw("Карта **** 1234 пополнена"))
+        self.assertIsNone(amount_from_raw("Счёт 1234567890123"))
+
+    def test_failed_operations_recognised(self) -> None:
+        for text in (
+            "Не исполнен. Проверьте корректность реквизитов.",
+            "Операция отклонена банком",
+            "Недостаточно средств на счёте",
+            "Платёж отменён",
+        ):
+            self.assertTrue(is_not_a_spend(text), text)
+
+    def test_successful_payment_is_not_filtered_out(self) -> None:
+        self.assertFalse(is_not_a_spend(REAL_PUSH))
+        self.assertFalse(is_not_a_spend("Оплата прошла. Сумма: 250.00 KGS"))
 
     def test_currency_from_push(self) -> None:
         self.assertEqual(currency_from_raw(REAL_PUSH), "KGS")

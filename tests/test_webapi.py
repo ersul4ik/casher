@@ -166,6 +166,21 @@ class SpendEndpointTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(oversized.status, 413)
 
+    async def test_failed_operation_push_is_skipped(self) -> None:
+        """The real "payment not executed" push must not become a spend of 557 277 896."""
+        response = await self.client.post(
+            "/spend",
+            json={
+                "raw": "Платеж: Мобильная связь\nРеквизиты: 557277896\n"
+                "Не исполнен.\nПроверьте корректность реквизитов."
+            },
+            headers=self.auth(),
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["status"], "skipped")
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM spends"), 0)
+        self.assertEqual(self.bot.sent, [])
+
     async def test_spend_survives_telegram_outage(self) -> None:
         self.bot.fail = True
         response = await self.client.post("/spend", json={"raw": REAL_PUSH}, headers=self.auth())

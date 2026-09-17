@@ -24,9 +24,17 @@ APP_VERSION = (os.environ.get("RENDER_GIT_COMMIT") or "dev")[:7]
 # A push reads "Успещная операция по QR. Сумма: 1470.00 KGS". The typo in the first word is the
 # bank's own, so we anchor on "Сумма:" alone — the typo may be fixed in any app update.
 AMOUNT_LABELLED_RE = re.compile(r"[Сс]умма[:\s]+([0-9][0-9\s ]*(?:[.,][0-9]{1,2})?)")
-AMOUNT_ANY_RE = re.compile(r"([0-9][0-9\s ]*[.,][0-9]{2})")
-AMOUNT_FALLBACK_RE = re.compile(r"([0-9]+)")
+# Only a number with decimals counts as an unlabelled amount. Anything looser would swallow
+# account and phone numbers: "Реквизиты: 557277896" is not a spend of 557 277 896.
+AMOUNT_ANY_RE = re.compile(r"(?<![0-9])([0-9][0-9\s ]*[.,][0-9]{2})(?![0-9])")
 CURRENCY_RE = re.compile(r"\b(KGS|USD|EUR|RUB|KZT|UZS|GBP|TRY)\b", re.IGNORECASE)
+
+# Failed, declined or cancelled operations move no money, so they are not spends.
+# The bank sends them through the same channel, e.g. "Не исполнен. Проверьте реквизиты."
+NOT_A_SPEND_RE = re.compile(
+    r"не\s*исполнен|отклон|отказ|неуспешн|не\s*удал|ошибк|недостаточно|отмен",
+    re.IGNORECASE,
+)
 
 
 def parse_amount(value: object) -> Decimal | None:
@@ -44,13 +52,18 @@ def parse_amount(value: object) -> Decimal | None:
 
 def amount_from_raw(raw: str) -> Decimal | None:
     """Pull the amount out of the push text when the shortcut sends it whole."""
-    for pattern in (AMOUNT_LABELLED_RE, AMOUNT_ANY_RE, AMOUNT_FALLBACK_RE):
+    for pattern in (AMOUNT_LABELLED_RE, AMOUNT_ANY_RE):
         match = pattern.search(raw)
         if match:
             amount = parse_amount(match.group(1))
             if amount is not None:
                 return amount
     return None
+
+
+def is_not_a_spend(raw: str) -> bool:
+    """True for pushes that report a failed operation rather than a payment."""
+    return bool(NOT_A_SPEND_RE.search(raw))
 
 
 def currency_from_raw(raw: str) -> str | None:
@@ -96,6 +109,11 @@ async def handle_spend(request: web.Request) -> web.Response:
         return web.json_response({"error": "bad json"}, status=400)
 
     raw = str(data.get("raw") or "")[:1000]
+    # The phone-side filter can only do so much, so failed operations are dropped here too.
+    if raw and is_not_a_spend(raw):
+        log.info("Skipped a push reporting a failed operation")
+        return web.json_response({"status": "skipped", "reason": "not a completed payment"})
+
     amount = parse_amount(data.get("amount")) or amount_from_raw(raw)
     if amount is None:
         return web.json_response({"error": "no amount"}, status=400)
