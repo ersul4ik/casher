@@ -1,121 +1,125 @@
-# Cacher — трекер трат из банковских пушей
+# Cacher — a spend tracker fed by bank push notifications
 
-Банк присылает пуш на iPhone → шорткат отправляет сумму боту → бот спрашивает категорию
-кнопками → отчёты за день, неделю и месяц.
+The bank sends a push to the iPhone → a Shortcuts automation forwards the amount to the bot →
+the bot asks for a category with buttons → day, week and month reports come out of it.
 
-Сервис многопользовательский: у каждого свои траты, категории, валюта, часовой пояс и личный
-токен для шортката. Чужие данные недоступны даже при знании id записи.
+The service is multi-user: everyone gets their own spends, categories, tags, currency, time zone
+and personal shortcut token. Another user's data stays out of reach even if the record id is known.
 
 ```
-Пуш банка на iPhone
-   ↓  Shortcuts, триггер «Когда я получаю уведомление»
-   ↓  POST https://<host>/spend  +  заголовок X-Token: <личный токен>
-Бот (aiogram + aiohttp в одном процессе)
-   ↓  пишет трату в Postgres со статусом «без категории»
-   ↓  «💸 Новая трата: 1470 KGS. Куда записать?» + кнопки категорий
-Нажатие → «✅ 1470 KGS → Кафе»
+Bank push on the iPhone
+   ↓  Shortcuts, "When I Get a Notification" trigger
+   ↓  POST https://<host>/spend  +  header X-Token: <personal token>
+Bot (aiogram + aiohttp in one process)
+   ↓  stores the spend in Postgres as uncategorised
+   ↓  "💸 Новая трата: 1470 KGS. Куда записать?" + category buttons
+Tap → "✅ 1470 KGS → Кафе"
 ```
 
-## Стек
+The bot speaks Russian to its users; the code, comments and this file are in English.
 
-| Что | Чем |
+## Stack
+
+| Part | Choice |
 |---|---|
-| Бот | Python 3.10+, aiogram 3 |
-| HTTP-приём трат | aiohttp (тот же процесс, тот же порт) |
-| База | Postgres (asyncpg) |
-| Хостинг | Render free + Neon free — см. [docs/DEPLOY.md](docs/DEPLOY.md) |
+| Bot | Python 3.10+, aiogram 3 |
+| Spend intake over HTTP | aiohttp, same process and same port |
+| Database | Postgres via asyncpg |
+| Hosting | Render free tier + Neon free tier — see [docs/DEPLOY.md](docs/DEPLOY.md) |
 
-## Как развернуть
+## Deployment
 
-Полный пошаговый гайд со ссылками и тем, где что брать: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
-Настройка шортката на iPhone: **[docs/SHORTCUT.md](docs/SHORTCUT.md)**.
+Step-by-step guide, including where every credential comes from: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+Setting up the iPhone shortcut: **[docs/SHORTCUT.md](docs/SHORTCUT.md)**.
+Both are written in Russian, for the person running this instance.
 
-## Локальный запуск
+## Running locally
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env              # вписать BOT_TOKEN и DATABASE_URL
+cp .env.example .env                   # fill in BOT_TOKEN and DATABASE_URL
 set -a && source .env && set +a
-.venv/bin/python scripts/check_db.py   # проверить связь с базой
-.venv/bin/python -m app.main      # без BASE_URL бот работает на long polling
+.venv/bin/python scripts/check_db.py   # verify the database connection
+.venv/bin/python -m app.main           # without BASE_URL the bot runs on long polling
 ```
 
-Схема базы создаётся сама при старте.
+The schema is created on start, so there is nothing to migrate by hand.
 
-## Команды бота
+## Bot commands
 
-| Команда | Что делает |
+| Command | What it does |
 |---|---|
-| `/start` | регистрация, нижнее меню с кнопками |
-| `/report` | меню отчётов: сегодня, вчера, неделя, прошлая неделя, месяц, прошлый месяц |
-| `/day` `/week` `/month` | сразу нужный период; стрелки `←` `→` листают периоды назад и вперёд |
-| `/pending` | разметить траты, оставшиеся без категории |
-| `/last` | последние траты: открыть по номеру, поставить теги, дописать описание, удалить |
-| `/cats` | категории: добавить, убрать |
-| `/export` | выгрузка всех трат в CSV |
-| `/settings`, `/currency USD`, `/tz +6` | валюта и часовой пояс |
-| `/token`, `/newtoken` | токен для шортката и его перевыпуск |
-| `/stats` | сводка по всем пользователям, только для `ADMIN_IDS` |
+| `/start` | registration, plus the bottom keyboard |
+| `/report` | report menu: today, yesterday, this and last week, this and last month |
+| `/day` `/week` `/month` | jump straight to a period; `←` `→` page through earlier ones |
+| `/pending` | tag the spends still waiting for a category |
+| `/last` | recent spends: open one by its number to tag, annotate or delete it |
+| `/cats` | categories: add, remove |
+| `/export` | CSV export of everything |
+| `/settings`, `/currency USD`, `/tz +6` | currency and time zone |
+| `/token`, `/newtoken` | the shortcut token, and reissuing it |
+| `/stats` | service-wide summary, `ADMIN_IDS` only |
 
-Трату можно завести и руками: написать боту `1470` или `1470 кафе` — во втором случае
-категория подставится сама по началу названия.
+A spend can also be entered by hand: send `1470`, or `1470 кафе` to have the category matched by
+the start of its name.
 
-## Теги
+## Categories and tags
 
-Категория у траты одна, тегов — сколько угодно. Категория отвечает на вопрос «куда ушло»
-(Магазин), теги — «на что именно» (вода, кофе, курут).
+A spend has exactly one category and any number of tags. The category answers "where did it go"
+(Магазин), tags answer "on what exactly" (вода, кофе, курут).
 
-После того как категория выбрана, под тратой появляются кнопки:
+Once a category is set, the spend turns into a card with four buttons:
 
-| Кнопка | Что делает |
+| Button | What it does |
 |---|---|
-| 🏷 Теги | отметить теги галочками; частые идут первыми, новые добавляются через запятую |
-| 📝 Описание | свободный текст к трате; `-` стирает прежнее |
-| ✏️ Категория | выбрать категорию заново |
-| 🗑 Удалить | удалить трату, с подтверждением |
+| 🏷 Теги | toggle tags; the most used come first, new ones are added comma-separated |
+| 📝 Описание | free-text note; sending `-` clears it |
+| ✏️ Категория | pick the category again |
+| 🗑 Удалить | delete the spend, after a confirmation |
 
-Те же кнопки доступны для любой прошлой траты: `/last` → нажать её номер.
+The same card opens for any past spend: `/last`, then tap its number.
 
-В каждом отчёте есть кнопка **🏷 По тегам** — та же неделя или месяц, но с разбивкой
-не по категориям, а по тегам: сколько ушло на воду, сколько на кофе. Трата с несколькими
-тегами учитывается в каждом из них, поэтому сумма по тегам может превышать общий итог —
-в отчёте об этом сказано прямо.
+Every report has a **🏷 По тегам** button — the same period broken down by tag instead of
+category. A spend carrying several tags counts towards each of them, so the tag totals can exceed
+the overall total; the report says so outright.
 
-## Приём трат: `POST /spend`
+## Spend intake: `POST /spend`
 
 ```bash
 curl -X POST https://<host>/spend \
-  -H "X-Token: <личный токен из /token>" \
+  -H "X-Token: <personal token from /token>" \
   -H "Content-Type: application/json" \
   -d '{"amount": 1470.00, "currency": "KGS", "raw": "Успещная операция по QR. Сумма: 1470.00 KGS"}'
 ```
 
-Поля `amount` и `currency` необязательные: если прислать только `raw`, бот сам достанет сумму
-и валюту из текста пуша. Это заметно упрощает шорткат.
+`amount` and `currency` are optional: sending only `raw` lets the bot pull the amount and the
+currency out of the push text itself, which keeps the shortcut down to a single action.
 
-| Поле | Обязательно | Комментарий |
+| Field | Required | Notes |
 |---|---|---|
-| `raw` | нет* | полный текст пуша, сохраняется целиком |
-| `amount` | нет* | число; если не задано, берётся из `raw` |
-| `currency` | нет | по умолчанию — валюта пользователя |
-| `occurred_at` | нет | ISO-8601, если время операции отличается от времени запроса |
-| `source` | нет | метка источника, по умолчанию `shortcut` |
+| `raw` | no* | the full push text, stored verbatim |
+| `amount` | no* | a number; taken from `raw` when absent |
+| `currency` | no | defaults to the user's currency |
+| `occurred_at` | no | ISO-8601, when the operation time differs from the request time |
+| `source` | no | free-form origin label, `shortcut` by default |
 
-\* хотя бы одно из `raw` / `amount` должно позволить определить сумму.
+\* at least one of `raw` / `amount` has to yield an amount.
 
-Ответы: `200 {"status":"ok","id":…}`, `200 {"status":"duplicate",…}` для повторного пуша с той
-же суммой в пределах 90 секунд, `401` без токена, `403` с чужим токеном, `400` если сумму
-определить не удалось.
+Responses: `200 {"status":"ok","id":…}`; `200 {"status":"duplicate",…}` for a repeated push with
+the same amount within 90 seconds; `200 {"status":"skipped",…}` for a push reporting a failed or
+cancelled operation; `401` without a token, `403` with someone else's, `400` when no amount could
+be determined.
 
-`GET /health` — healthcheck и точка для пинговалки, которая не даёт бесплатному инстансу заснуть.
+`GET /health` — healthcheck, the target of the keep-alive ping, and it reports the deployed
+commit so a missing deploy is easy to tell from a code problem.
 
-## Тесты
+## Tests
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -t .
 ```
 
-Интеграционные тесты требуют Postgres и пропускаются без него:
+Integration tests need Postgres and are skipped without it:
 
 ```bash
 docker run -d --name cacher-pg -e POSTGRES_PASSWORD=pass -e POSTGRES_DB=cacher \
@@ -124,35 +128,97 @@ export TEST_DATABASE_URL=postgresql://postgres:pass@localhost:55432/cacher
 .venv/bin/python -m unittest discover -s tests -t .
 ```
 
-## Структура
+## Layout
 
 ```
 app/
-  main.py       точка входа: aiohttp-сервер + бот в одном процессе
-  config.py     переменные окружения
-  db.py         пул asyncpg и все запросы
-  schema.sql    таблицы users / categories / spends
-  webapi.py     POST /spend, GET /health, парсинг суммы из текста пуша
-  handlers.py   команды, кнопки, ручной ввод трат
-  keyboards.py  клавиатуры
-  reports.py    границы периодов и текст отчётов
-  notifier.py   вопрос «куда записать?»
-tests/          юнит- и интеграционные тесты
-docs/           DEPLOY.md и SHORTCUT.md
+  main.py       entry point: aiohttp server and bot in one process
+  config.py     environment variables
+  db.py         asyncpg pool and every query
+  schema.sql    users / categories / spends / tags
+  webapi.py     POST /spend, GET /health, amount parsing out of push text
+  handlers.py   commands, buttons, manual entry
+  keyboards.py  keyboards
+  reports.py    period boundaries and report text
+  notifier.py   the "which category?" prompt
+tests/          unit and integration tests
+docs/           DEPLOY.md and SHORTCUT.md
 ```
 
-## Схема данных
+## Data model
 
 `users` — `tg_id`, `api_token`, `currency`, `tz_minutes`, `created_at`, `last_seen_at`.
-`categories` — свои у каждого пользователя, уникальны без учёта регистра, удаление = архивация.
+`categories` — per user, unique case-insensitively; deleting archives rather than drops.
 `spends` — `user_id`, `category_id`, `amount NUMERIC(14,2)`, `currency`, `status`
 (`pending` / `done` / `ignored`), `source`, `raw`, `note`, `occurred_at`, `created_at`,
 `categorized_at`.
-`tags` + `spend_tags` — теги пользователя и их связь с тратами (многие ко многим). Удаление
-траты убирает её связи, сами теги остаются для будущих трат.
+`tags` + `spend_tags` — a user's tags and their many-to-many link to spends. Deleting a spend
+drops its links; the tags themselves survive for future spends.
 
-Схема применяется при каждом старте и вся идемпотентна, так что новые таблицы появляются
-на работающем сервисе сами — отдельных миграций делать не нужно.
+The schema is applied on every start and is fully idempotent, so new tables appear on a running
+service by themselves — no separate migration step.
 
-Сырой текст пуша хранится рядом с распарсенной суммой: если банк поменяет формат, историю
-можно будет пересчитать.
+The raw push text is kept next to the parsed amount: if the bank changes its format, history can
+be recomputed.
+
+## Roadmap
+
+Ordered by value, not by effort. Nothing here is a new kind of report — the point is to cut the
+work the user has to do.
+
+### Auto-categorisation
+
+The single most valuable addition. Right now every spend costs a button press, even when the
+answer is always the same.
+
+- **By amount, available today.** The push carries nothing but a number, so the bot learns from
+  history: if 350 KGS has been filed under Кофейня four times, offer Кофейня as the first button.
+  Time of day sharpens this further — 350 in the morning is coffee, in the evening it is not.
+- **By merchant, once Apple Pay pushes are parsed.** Those carry the shop name, which is a far
+  stronger signal than the amount. Remember merchant → category and pre-fill it.
+- Should always stay a suggestion that can be overridden, never a silent decision.
+
+### Apple Pay push format
+
+Apple Pay payments produce a different push, which also contains an amount. Worth doing as a
+general rewrite: a list of parsing rules instead of one regex, plus a `merchant` column on
+`spends`. That column is what feeds merchant-based auto-categorisation above.
+
+Needs sample texts of those pushes collected first.
+
+### Limits and alerts
+
+A monthly limit per category and one overall, reported at the moment a spend is recorded rather
+than in a separate report:
+
+```
+✅ 1 470 KGS → Кафе
+⚠️ Кафе: 8 200 из 10 000 за месяц (82%)
+```
+
+Worth including the pace, not just the share: "15 days of 30 gone, 82% of the limit spent" catches
+an overrun while it can still be corrected. Set with something like `/limit кафе 10000`.
+
+### Editing the amount
+
+Currently impossible — a wrong amount can only be deleted and re-entered. Small fix, obvious gap.
+
+### Reminder about uncategorised spends
+
+An evening nudge when spends are still waiting for a category. The keep-alive cron already exists,
+so this needs one more endpoint and no new infrastructure.
+
+### Later
+
+- **Subscriptions.** Spot an amount that repeats monthly and warn before it is charged again.
+  Needs a couple of months of history before it can work at all.
+- **Currency conversion.** Convert foreign-currency spends into the main currency at the national
+  bank rate, so totals stop splitting per currency.
+- **Income tracking.** Incoming transfers are currently discarded via the "не расход" button;
+  storing them would allow an in/out balance.
+
+### Deliberately not planned
+
+- **Receipt OCR and voice input.** Fashionable, but needs a paid LLM API for a rare case.
+- **Bank account aggregation.** There is no open banking in Kyrgyzstan; pushes are all there is.
+- **Web dashboard.** Duplicates the bot and adds a second service to keep alive.
