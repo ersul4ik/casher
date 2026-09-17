@@ -529,6 +529,19 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("кофе", tag_text)
         self.assertIn("200", tag_text)
 
+    async def test_empty_entity_says_so_instead_of_printing_dashes(self) -> None:
+        user, _ = await self.make_user(1043)
+        category = (await db.list_categories(self.pool, user["id"]))[0]
+        tag = await db.ensure_tag(self.pool, user["id"], "курут")
+
+        text = await build_entity_summary(self.pool, user, "cat", category["id"])
+        self.assertIn("пока нет", text)
+        self.assertNotIn("Сегодня", text)
+        self.assertNotIn("—", text)
+
+        tag_text = await build_entity_summary(self.pool, user, "tag", tag["id"])
+        self.assertIn("Трат с этим тегом пока нет", tag_text)
+
     async def test_entity_summary_refuses_someone_elses_entity(self) -> None:
         alice, _ = await self.make_user(1041)
         bob, _ = await self.make_user(1042)

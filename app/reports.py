@@ -212,6 +212,16 @@ async def build_entity_summary(
     icon = "🏷" if kind == "tag" else "📁"
     lines = [f"{icon} <b>{html.escape(name)}</b>", ""]
 
+    overall = await db.entity_totals(pool, user["id"], kind, entity_id)
+    if not overall:
+        # Four dashes in a row say nothing; one sentence does.
+        lines.append(
+            "Трат с этим тегом пока нет."
+            if kind == "tag"
+            else "Трат по этой категории пока нет."
+        )
+        return "\n".join(lines)
+
     for label, period_kind in (("Сегодня", "day"), ("Неделя", "week"), ("Месяц", "month")):
         period = resolve_period(period_kind, 0, user["tz_minutes"])
         rows = await db.entity_totals(
@@ -219,7 +229,6 @@ async def build_entity_summary(
         )
         lines.append(f"{label}: <b>{_totals_line(rows)}</b>")
 
-    overall = await db.entity_totals(pool, user["id"], kind, entity_id)
     lines.append(f"За всё время: <b>{_totals_line(overall)}</b>")
 
     recent = await db.entity_recent(pool, user["id"], kind, entity_id)
