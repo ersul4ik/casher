@@ -54,6 +54,19 @@ class Config:
         return f"{self.base_url}/spend" if self.base_url else "http://localhost/spend"
 
 
+def _base_url() -> str:
+    """Public address of the service, empty for a local run.
+
+    Render hands the service its own address in RENDER_EXTERNAL_URL, so a freshly
+    created service knows where to point the webhook before anyone types the address
+    into the dashboard. That matters during a move between regions: started without an
+    address the bot would fall back to long polling and quietly take the webhook away
+    from the instance still serving users.
+    """
+    explicit = os.environ.get("BASE_URL", "").strip()
+    return (explicit or os.environ.get("RENDER_EXTERNAL_URL", "").strip()).rstrip("/")
+
+
 def load_config() -> Config:
     bot_token = _require("BOT_TOKEN")
     admin_raw = os.environ.get("ADMIN_IDS", "").replace(";", ",")
@@ -68,7 +81,7 @@ def load_config() -> Config:
     return Config(
         bot_token=bot_token,
         database_url=_require("DATABASE_URL"),
-        base_url=os.environ.get("BASE_URL", "").strip().rstrip("/"),
+        base_url=_base_url(),
         webhook_secret=secret,
         port=_int("PORT", 8080),
         default_currency=(os.environ.get("DEFAULT_CURRENCY") or "KGS").strip().upper(),

@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# Copy the whole database from one Postgres to another — used when moving the Neon
+# project to a region next to the service. Both connection strings stay in the
+# environment and never reach the process list.
+#
+#     SRC_DATABASE_URL='postgresql://...us-east-2.aws.neon.tech/neondb?sslmode=require' \
+#     DST_DATABASE_URL='postgresql://...eu-central-1.aws.neon.tech/neondb?sslmode=require' \
+#     scripts/move_db.sh
+#
+# pg_dump has to be at least as new as the server, and Neon runs a recent Postgres,
+# so the dump runs inside a container instead of relying on whatever brew installed.
+# The destination is overwritten: existing tables there are dropped first.
+
+set -euo pipefail
+
+IMAGE="postgres:17-alpine"
+
+: "${SRC_DATABASE_URL:?set SRC_DATABASE_URL to the database you are copying FROM}"
+: "${DST_DATABASE_URL:?set DST_DATABASE_URL to the database you are copying TO}"
+
+if [ "$SRC_DATABASE_URL" = "$DST_DATABASE_URL" ]; then
+    echo "Source and destination are the same database. Nothing to do." >&2
+    exit 1
+fi
+
+host_of() { printf '%s\n' "$1" | sed -E 's|^[^@]*@||; s|[/?].*$||'; }
+
+echo "From: $(host_of "$SRC_DATABASE_URL")"
+echo "To:   $(host_of "$DST_DATABASE_URL")"
+echo
+
+count_rows() {
+    docker run --rm -i -e PGURL="$1" "$IMAGE" sh -c 'psql "$PGURL" -At -f -' <<'SQL' 2>/dev/null || echo "no tables"
+SELECT string_agg(t || '=' || n, ' ' ORDER BY t)
+  FROM (
+    SELECT 'users' AS t, count(*) AS n FROM users
+    UNION ALL SELECT 'categories', count(*) FROM categories
+    UNION ALL SELECT 'spends', count(*) FROM spends
+    UNION ALL SELECT 'tags', count(*) FROM tags
+    UNION ALL SELECT 'spend_tags', count(*) FROM spend_tags
+  ) x
+SQL
+}
+
+before="$(count_rows "$SRC_DATABASE_URL")"
+echo "Source holds: $before"
+
+read -r -p "Overwrite the destination with this? [y/N] " answer
+case "$answer" in
+    y | Y) ;;
+    *)
+        echo "Cancelled."
+        exit 1
+        ;;
+esac
+
+docker run --rm -e SRC="$SRC_DATABASE_URL" -e DST="$DST_DATABASE_URL" "$IMAGE" \
+    sh -c 'pg_dump -Fc --no-owner --no-acl "$SRC" | pg_restore -d "$DST" --no-owner --no-acl --clean --if-exists'
+
+after="$(count_rows "$DST_DATABASE_URL")"
+echo
+echo "Destination holds: $after"
+
+if [ "$before" = "$after" ]; then
+    echo "Row counts match. Point DATABASE_URL at the new database and redeploy."
+else
+    echo "Row counts DIFFER — do not switch over until you know why." >&2
+    exit 1
+fi

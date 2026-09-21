@@ -15,8 +15,9 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
-      - key: BASE_URL
-        sync: false
+      # BASE_URL is not listed on purpose: Render sets RENDER_EXTERNAL_URL itself and the
+      # bot falls back to it, so a service created in a new region works before anyone
+      # types its address in. Set BASE_URL by hand only behind a custom domain.
       - key: ADMIN_IDS
         sync: false
       - key: WEBHOOK_SECRET

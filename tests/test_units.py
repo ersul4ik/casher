@@ -5,11 +5,14 @@ Run: python -m unittest discover -s tests
 
 from __future__ import annotations
 
+import os
 import unittest
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from app import keyboards
+from app.config import _base_url
 from app.db import normalize_dsn
 from app.handlers import MANUAL_SPEND_RE, parse_tag_names
 from app.reports import money, period_title, resolve_period
@@ -200,6 +203,33 @@ class TestPeriods(unittest.TestCase):
         self.assertRegex(period_title(resolve_period("month", 0, BISHKEK)), r"^[А-Я][а-я]+ \d{4}$")
 
 
+class TestBaseUrl(unittest.TestCase):
+    """Guessing the address wrong means the bot goes deaf, so the order is fixed."""
+
+    def run_with(self, **env: str) -> str:
+        with mock.patch.dict(os.environ, env, clear=True):
+            return _base_url()
+
+    def test_explicit_wins(self) -> None:
+        self.assertEqual(
+            self.run_with(
+                BASE_URL="https://mine.example", RENDER_EXTERNAL_URL="https://render.example"
+            ),
+            "https://mine.example",
+        )
+
+    def test_render_address_is_used_when_nothing_is_set(self) -> None:
+        # A service created in a new region knows its address before anyone types it in.
+        self.assertEqual(
+            self.run_with(RENDER_EXTERNAL_URL="https://casher-bot.onrender.com/"),
+            "https://casher-bot.onrender.com",
+        )
+
+    def test_nothing_means_long_polling(self) -> None:
+        self.assertEqual(self.run_with(), "")
+        self.assertEqual(self.run_with(BASE_URL="  "), "")
+
+
 class TestDsn(unittest.TestCase):
     def test_neon_style_dsn_cleaned(self) -> None:
         dsn, extra = normalize_dsn(
@@ -214,6 +244,19 @@ class TestDsn(unittest.TestCase):
         dsn, extra = normalize_dsn("postgresql://u:p@host/db?pgbouncer=true&sslmode=require")
         self.assertNotIn("pgbouncer", dsn)
         self.assertEqual(extra["statement_cache_size"], 0)
+
+    def test_neon_pooled_host_disables_statement_cache(self) -> None:
+        # The pooled string Neon offers by default never mentions pgbouncer.
+        _, extra = normalize_dsn(
+            "postgresql://u:p@ep-x-pooler.eu-central-1.aws.neon.tech/db?sslmode=require"
+        )
+        self.assertEqual(extra["statement_cache_size"], 0)
+
+    def test_direct_host_keeps_the_cache(self) -> None:
+        _, extra = normalize_dsn(
+            "postgresql://u:p@ep-x.eu-central-1.aws.neon.tech/db?sslmode=require"
+        )
+        self.assertEqual(extra, {})
 
     def test_sqlalchemy_scheme_stripped(self) -> None:
         dsn, _ = normalize_dsn("postgresql+asyncpg://u:p@host/db")

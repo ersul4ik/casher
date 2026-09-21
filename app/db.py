@@ -25,6 +25,10 @@ def normalize_dsn(dsn: str) -> tuple[str, dict[str, Any]]:
     Neon and Supabase hand out psycopg-flavoured strings: a ``postgresql+asyncpg`` scheme,
     ``channel_binding=require`` and sometimes ``pgbouncer=true``. asyncpg chokes on the first
     two, and behind pgbouncer it needs the prepared statement cache turned off.
+
+    Neon's console offers a pooled connection by default, and that string says nothing about
+    pgbouncer — the only sign is ``-pooler`` in the host name. Missing it costs an hour of
+    puzzling over "prepared statement __asyncpg_stmt_1__ does not exist", so it counts too.
     """
     scheme, netloc, path, query, fragment = urlsplit(dsn.strip())
     if "+" in scheme:  # postgresql+asyncpg -> postgresql
@@ -32,7 +36,8 @@ def normalize_dsn(dsn: str) -> tuple[str, dict[str, Any]]:
 
     params = dict(parse_qsl(query, keep_blank_values=True))
     extra: dict[str, Any] = {}
-    if params.pop("pgbouncer", "").lower() == "true":
+    pooled = params.pop("pgbouncer", "").lower() == "true" or "-pooler." in netloc
+    if pooled:
         extra["statement_cache_size"] = 0
     for name in _UNSUPPORTED_DSN_PARAMS:
         params.pop(name, None)
