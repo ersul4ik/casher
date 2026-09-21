@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from app import keyboards
 from app.db import normalize_dsn
+from app.handlers import MANUAL_SPEND_RE, parse_tag_names
 from app.reports import money, period_title, resolve_period
 from app.webapi import (
     amount_from_raw,
@@ -114,6 +115,30 @@ class TestMenuButtons(unittest.TestCase):
     def test_ordinary_text_passes_through(self) -> None:
         for text in ("Швепс, лёд", "две бутылки воды", "CSV", "", None):
             self.assertFalse(keyboards.is_menu_button(text), text)
+
+
+class TestTagNames(unittest.TestCase):
+    """Tags are typed as one line, so the splitting has to be forgiving."""
+
+    def test_comma_separated_line(self) -> None:
+        self.assertEqual(parse_tag_names("вода, кофе, курут"), ["вода", "кофе", "курут"])
+
+    def test_blanks_and_repeats_dropped(self) -> None:
+        self.assertEqual(parse_tag_names(" вода ,, кофе , Вода "), ["вода", "кофе"])
+        self.assertEqual(parse_tag_names("   "), [])
+        self.assertEqual(parse_tag_names(None), [])
+
+    def test_a_single_word_is_one_tag(self) -> None:
+        self.assertEqual(parse_tag_names("кофе"), ["кофе"])
+
+    def test_limits_hold(self) -> None:
+        self.assertEqual(len(parse_tag_names(",".join(f"тег{i}" for i in range(20)))), 5)
+        self.assertEqual(len(parse_tag_names("я" * 100)[0]), 24)
+
+    def test_a_typed_amount_is_not_tags(self) -> None:
+        # The spend card listens for tags by itself, so "350 кофейня" must stay a spend.
+        self.assertIsNotNone(MANUAL_SPEND_RE.match("350 кофейня"))
+        self.assertIsNone(MANUAL_SPEND_RE.match("вода, кофе"))
 
 
 class TestMoney(unittest.TestCase):

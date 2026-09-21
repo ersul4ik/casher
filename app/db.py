@@ -427,6 +427,48 @@ async def ensure_tag(pool: asyncpg.Pool, user_id: int, name: str) -> asyncpg.Rec
     )
 
 
+async def attach_tags_by_name(
+    pool: asyncpg.Pool, user_id: int, spend_id: int, names: list[str]
+) -> list[str]:
+    """Attach tags written by hand, creating the ones that do not exist yet.
+
+    A known name matches regardless of case and keeps its stored spelling. One round
+    trip for the whole list: typing three tags should not cost six queries.
+    Returns the names that were newly attached — already attached ones are left out.
+    """
+    if not names:
+        return []
+    rows = await pool.fetch(
+        """
+        WITH wanted AS (
+            SELECT DISTINCT ON (lower(name)) name
+              FROM unnest($3::text[]) AS name
+             ORDER BY lower(name)
+        ),
+        known AS (
+            INSERT INTO tags (user_id, name)
+            SELECT $1, name FROM wanted
+            ON CONFLICT (user_id, lower(name)) DO UPDATE SET name = tags.name
+            RETURNING id, name
+        ),
+        linked AS (
+            INSERT INTO spend_tags (spend_id, tag_id)
+            SELECT s.id, known.id
+              FROM known
+              JOIN spends s ON s.id = $2 AND s.user_id = $1
+            ON CONFLICT DO NOTHING
+            RETURNING tag_id
+        )
+        SELECT known.name FROM known JOIN linked ON linked.tag_id = known.id
+        ORDER BY known.name
+        """,
+        user_id,
+        spend_id,
+        names,
+    )
+    return [row["name"] for row in rows]
+
+
 async def tags_for_spend(pool: asyncpg.Pool, spend_id: int) -> list[asyncpg.Record]:
     return await pool.fetch(
         """

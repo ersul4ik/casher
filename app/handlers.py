@@ -34,6 +34,24 @@ MAX_TAGS_PER_MESSAGE = 5
 MAX_NOTE = 200
 LAST_LIMIT = 10
 
+# Shown under a spend card so the shortcut is discoverable: no button tap needed.
+TAG_INPUT_HINT = (
+    "<i>Теги можно просто написать через запятую: <code>вода, кофе</code>. "
+    "Знакомые подхвачу, новые заведу сам.</i>"
+)
+
+
+def parse_tag_names(text: str | None) -> list[str]:
+    """Split a typed line into tag names: 'вода, кофе,,  Кофе ' → ['вода', 'кофе']."""
+    seen: set[str] = set()
+    names: list[str] = []
+    for part in (text or "").split(","):
+        name = part.strip()[:MAX_TAG_NAME]
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            names.append(name)
+    return names[:MAX_TAGS_PER_MESSAGE]
+
 
 class Flow(StatesGroup):
     category_name = State()
@@ -126,21 +144,50 @@ def _last_list_text(spends: list[asyncpg.Record], user: asyncpg.Record) -> str:
     return "\n".join(lines)
 
 
+async def _await_tags(state: FSMContext, spend_id: int, *, asked: bool = False) -> None:
+    """Let the next typed line become tags for this spend.
+
+    `asked` marks the state set by the "новые теги" button: there a line is tags even
+    if it starts with a digit, while a card armed on its own must still let a new
+    spend through — see on_tag_names.
+    """
+    await state.set_state(Flow.tag_names)
+    await state.update_data(spend_id=spend_id, tags_asked=asked)
+
+
 async def _show_spend(
-    cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record, spend_id: int
+    cb: CallbackQuery,
+    pool: asyncpg.Pool,
+    user: asyncpg.Record,
+    spend_id: int,
+    state: FSMContext | None = None,
+    spend: asyncpg.Record | None = None,
 ) -> bool:
-    """Redraw the spend card in place. False means the spend is gone."""
-    spend = await db.get_spend(pool, user["id"], spend_id)
+    """Redraw the spend card in place. False means the spend is gone.
+
+    With a state the card also takes typed tags, and says so. A caller that has just
+    written the row passes it in: one round trip less on the tap the user waits for.
+    """
+    if spend is None:
+        spend = await db.get_spend(pool, user["id"], spend_id)
     if spend is None:
         await cb.answer("Запись не найдена", show_alert=True)
         return False
     tags = await db.tags_for_spend(pool, spend_id)
-    await _safe_edit(cb, _spend_text(spend, tags, user), keyboards.spend_actions(spend_id))
+    text = _spend_text(spend, tags, user)
+    if state is not None:
+        await _await_tags(state, spend_id)
+        text = f"{text}\n\n{TAG_INPUT_HINT}"
+    await _safe_edit(cb, text, keyboards.spend_actions(spend_id))
     return True
 
 
 async def _show_tag_picker(
-    cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record, spend_id: int
+    cb: CallbackQuery,
+    pool: asyncpg.Pool,
+    user: asyncpg.Record,
+    spend_id: int,
+    state: FSMContext,
 ) -> None:
     spend = await db.get_spend(pool, user["id"], spend_id)
     if spend is None:
@@ -149,10 +196,11 @@ async def _show_tag_picker(
     tags = await db.list_tags(pool, user["id"])
     selected = {tag["id"] for tag in await db.tags_for_spend(pool, spend_id)}
     hint = (
-        "Отметь теги — на что именно ушли деньги."
+        "Отметь теги кнопками или напиши их через запятую."
         if tags
-        else "Тегов пока нет. Добавь первые — например: вода, кофе, курут."
+        else "Тегов пока нет. Напиши первые через запятую — например: вода, кофе, курут."
     )
+    await _await_tags(state, spend_id)
     await _safe_edit(
         cb,
         f"{_spend_text(spend, [], user)}\n\n{hint}",
@@ -363,40 +411,53 @@ async def cmd_last(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> No
 
 
 @router.callback_query(F.data.startswith("cat:"))
-async def cb_pick_category(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+async def cb_pick_category(
+    cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
     _, raw_spend, raw_category = cb.data.split(":", 2)
     spend = await db.set_category(pool, user["id"], int(raw_spend), int(raw_category))
     if spend is None:
         await cb.answer("Запись не найдена", show_alert=True)
         return
-    await _show_spend(cb, pool, user, spend["id"])
+    # Tagging usually follows the category, so the card is already listening for tags.
+    await _show_spend(cb, pool, user, spend["id"], state, spend)
     await cb.answer(spend["category_name"])
 
 
 @router.callback_query(F.data.startswith("skip:"))
-async def cb_skip(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+async def cb_skip(
+    cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
     spend_id = int(cb.data.split(":", 1)[1])
     spend = await db.mark_ignored(pool, user["id"], spend_id)
     if spend is None:
         await cb.answer("Запись не найдена", show_alert=True)
         return
-    await _show_spend(cb, pool, user, spend_id)
+    # Nothing left to tag here, so the card stops listening for tags.
+    await state.clear()
+    await _show_spend(cb, pool, user, spend_id, spend=spend)
     await cb.answer("Не расход")
 
 
 @router.callback_query(F.data.startswith("sp:"))
-async def cb_open_spend(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
-    await _show_spend(cb, pool, user, int(cb.data.split(":", 1)[1]))
+async def cb_open_spend(
+    cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
+    await _show_spend(cb, pool, user, int(cb.data.split(":", 1)[1]), state)
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("edit:"))
-async def cb_edit(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+async def cb_edit(
+    cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
     spend_id = int(cb.data.split(":", 1)[1])
     spend = await db.reopen_spend(pool, user["id"], spend_id)
     if spend is None:
         await cb.answer("Запись не найдена", show_alert=True)
         return
+    # The card is gone until a category is picked again; typed text is not tags now.
+    await state.clear()
     categories = await db.list_categories(pool, user["id"])
     await _safe_edit(
         cb, notifier.spend_prompt(spend), keyboards.category_picker(spend_id, categories)
@@ -434,9 +495,11 @@ async def cb_delete_ask(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Rec
 
 @router.callback_query(F.data.startswith("delyes:"))
 async def cb_delete_confirmed(
-    cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record
+    cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool, user: asyncpg.Record
 ) -> None:
     spend_id = int(cb.data.split(":", 1)[1])
+    # There is no card left to type tags into.
+    await state.clear()
     if await db.delete_spend(pool, user["id"], spend_id):
         await _safe_edit(cb, "🗑 Трата удалена")
         await cb.answer("Удалено")
@@ -448,28 +511,31 @@ async def cb_delete_confirmed(
 
 
 @router.callback_query(F.data.startswith("tags:"))
-async def cb_tags(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
-    await _show_tag_picker(cb, pool, user, int(cb.data.split(":", 1)[1]))
+async def cb_tags(
+    cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
+    await _show_tag_picker(cb, pool, user, int(cb.data.split(":", 1)[1]), state)
     await cb.answer()
 
 
 @router.callback_query(F.data.startswith("tg:"))
-async def cb_toggle_tag(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+async def cb_toggle_tag(
+    cb: CallbackQuery, state: FSMContext, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
     _, raw_spend, raw_tag = cb.data.split(":", 2)
     spend_id = int(raw_spend)
     added = await db.toggle_tag(pool, user["id"], spend_id, int(raw_tag))
     if added is None:
         await cb.answer("Тег не найден", show_alert=True)
         return
-    await _show_tag_picker(cb, pool, user, spend_id)
+    await _show_tag_picker(cb, pool, user, spend_id, state)
     await cb.answer("Отмечен" if added else "Снят")
 
 
 @router.callback_query(F.data.startswith("tgnew:"))
 async def cb_new_tags(cb: CallbackQuery, state: FSMContext) -> None:
     spend_id = int(cb.data.split(":", 1)[1])
-    await state.set_state(Flow.tag_names)
-    await state.update_data(spend_id=spend_id)
+    await _await_tags(state, spend_id, asked=True)
     await cb.message.answer(
         "Какие теги добавить? Можно несколько через запятую:\n"
         "<code>вода, кофе, курут</code>\n"
@@ -480,28 +546,39 @@ async def cb_new_tags(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(StateFilter(Flow.tag_names))
 async def on_tag_names(
-    msg: Message, state: FSMContext, pool: asyncpg.Pool, user: asyncpg.Record
+    msg: Message,
+    state: FSMContext,
+    pool: asyncpg.Pool,
+    user: asyncpg.Record,
+    config: Config,
 ) -> None:
-    names = [part.strip()[:MAX_TAG_NAME] for part in (msg.text or "").split(",")]
-    names = [name for name in names if name][:MAX_TAGS_PER_MESSAGE]
     data = await state.get_data()
-    await state.clear()
+    text = (msg.text or "").strip()
+
+    # The card listens for tags on its own, so a line that reads like a new spend
+    # ("350 кофейня") has to stay a spend. After the "новые теги" button it does not:
+    # there the answer was asked for, and a tag may well start with a number.
+    if not data.get("tags_asked") and MANUAL_SPEND_RE.match(text):
+        await state.clear()
+        await on_plain_text(msg, state, pool, user, config)
+        return
+
+    names = parse_tag_names(text)
     if not names:
         await msg.answer("Не разобрал теги. Пример: <code>вода, кофе</code>")
         return
 
     spend_id = data["spend_id"]
-    attached = []
-    for name in names:
-        tag = await db.ensure_tag(pool, user["id"], name)
-        if await db.attach_tag(pool, user["id"], spend_id, tag["id"]):
-            attached.append(tag["name"])
+    await db.attach_tags_by_name(pool, user["id"], spend_id, names)
 
     spend = await db.get_spend(pool, user["id"], spend_id)
     if spend is None:
+        await state.clear()
         await msg.answer("Теги сохранил, но саму трату уже не нашёл.")
         return
     tags = await db.tags_for_spend(pool, spend_id)
+    # Still listening: more tags can follow without tapping anything.
+    await _await_tags(state, spend_id)
     await msg.answer(
         _spend_text(spend, tags, user), reply_markup=keyboards.spend_actions(spend_id)
     )
@@ -653,8 +730,9 @@ async def on_category_name(
         )
         return
     tags = await db.tags_for_spend(pool, spend_id)
+    await _await_tags(state, spend_id)
     await msg.answer(
-        _spend_text(spend, tags, user) + "\n\nКатегория добавлена в кнопки.",
+        f"{_spend_text(spend, tags, user)}\n\nКатегория добавлена в кнопки.\n{TAG_INPUT_HINT}",
         reply_markup=keyboards.spend_actions(spend_id),
     )
 
@@ -737,7 +815,11 @@ async def cb_noop(cb: CallbackQuery) -> None:
 
 @router.message(F.text)
 async def on_plain_text(
-    msg: Message, pool: asyncpg.Pool, user: asyncpg.Record, config: Config
+    msg: Message,
+    state: FSMContext,
+    pool: asyncpg.Pool,
+    user: asyncpg.Record,
+    config: Config,
 ) -> None:
     match = MANUAL_SPEND_RE.match(msg.text)
     if not match:
@@ -772,8 +854,10 @@ async def on_plain_text(
     )
     if category:
         stored = await db.get_spend(pool, user["id"], spend["id"])
+        await _await_tags(state, spend["id"])
         await msg.answer(
-            _spend_text(stored, [], user), reply_markup=keyboards.spend_actions(spend["id"])
+            f"{_spend_text(stored, [], user)}\n\n{TAG_INPUT_HINT}",
+            reply_markup=keyboards.spend_actions(spend["id"]),
         )
     else:
         await notifier.ask_category(msg.bot, pool, user, spend)

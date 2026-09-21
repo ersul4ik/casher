@@ -85,10 +85,16 @@ Once a category is set, the spend turns into a card with four buttons:
 
 | Button | What it does |
 |---|---|
-| 🏷 Теги | toggle tags; the most used come first, new ones are added comma-separated |
+| 🏷 Теги | toggle tags with buttons; the most used come first |
 | 📝 Описание | free-text note; sending `-` clears it |
 | ✏️ Категория | pick the category again |
 | 🗑 Удалить | delete the spend, after a confirmation |
+
+An open card also listens for tags typed as one line — `вода, кофе, курут`. A name already in
+use attaches that tag whatever its case, an unknown one is created on the spot, so tagging costs
+a single message instead of a trip through the 🏷 button. A line that reads like a new spend
+(`350 кофейня`) is still a new spend; after the explicit **➕ Новые теги** button it is not, so a
+tag may start with a digit there. A command or a menu tap ends the listening.
 
 The same card opens for any past spend: `/last`, then tap its number.
 

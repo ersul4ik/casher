@@ -305,6 +305,49 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await db.toggle_tag(self.pool, bob["id"], spend["id"], water["id"]))
         self.assertIsNone(await db.delete_tag(self.pool, bob["id"], water["id"]))
 
+    async def test_typed_tags_reuse_known_names_and_create_the_rest(self) -> None:
+        alice, _ = await self.make_user(1030)
+        bob, _ = await self.make_user(1031)
+        spend = await db.create_spend(
+            self.pool,
+            user_id=alice["id"],
+            amount=Decimal("480.00"),
+            currency="KGS",
+            raw=None,
+            source="manual",
+            category_id=(await db.list_categories(self.pool, alice["id"]))[0]["id"],
+        )
+        water = await db.ensure_tag(self.pool, alice["id"], "вода")
+
+        # "Вода" is the tag she already has; the other two are new.
+        attached = await db.attach_tags_by_name(
+            self.pool, alice["id"], spend["id"], ["Вода", "кофе", "курут"]
+        )
+        self.assertEqual(sorted(attached), ["вода", "кофе", "курут"])
+        self.assertEqual(
+            [t["name"] for t in await db.tags_for_spend(self.pool, spend["id"])],
+            ["вода", "кофе", "курут"],
+        )
+        # The known name keeps its stored spelling instead of turning into a twin.
+        self.assertEqual(len(await db.list_tags(self.pool, alice["id"])), 3)
+        self.assertIn(water["id"], {t["id"] for t in await db.list_tags(self.pool, alice["id"])})
+
+        # Sending the same line again attaches nothing new and reports nothing.
+        self.assertEqual(
+            await db.attach_tags_by_name(self.pool, alice["id"], spend["id"], ["вода", "кофе"]),
+            [],
+        )
+        self.assertEqual(len(await db.tags_for_spend(self.pool, spend["id"])), 3)
+
+        # An empty line is not a database call at all.
+        self.assertEqual(await db.attach_tags_by_name(self.pool, alice["id"], spend["id"], []), [])
+
+        # Bob cannot tag Alice's spend, even though his own tag gets created.
+        self.assertEqual(
+            await db.attach_tags_by_name(self.pool, bob["id"], spend["id"], ["чай"]), []
+        )
+        self.assertEqual(len(await db.tags_for_spend(self.pool, spend["id"])), 3)
+
     async def test_tag_report_and_untagged_count(self) -> None:
         user, _ = await self.make_user(1022)
         category = (await db.list_categories(self.pool, user["id"]))[0]
