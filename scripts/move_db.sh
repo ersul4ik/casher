@@ -26,6 +26,20 @@ fi
 
 host_of() { printf '%s\n' "$1" | sed -E 's|^[^@]*@||; s|[/?].*$||'; }
 
+# Neon's console hands out the pooled string by default. pg_dump needs a session of its
+# own and does not survive pgbouncer, and the direct host is the same name without
+# "-pooler", so take that instead of making the operator hunt for the toggle.
+unpool() { printf '%s\n' "$1" | sed -E 's|@([^/?]*)-pooler\.|@\1.|'; }
+
+for name in SRC_DATABASE_URL DST_DATABASE_URL; do
+    eval "value=\$$name"
+    direct="$(unpool "$value")"
+    if [ "$direct" != "$value" ]; then
+        echo "$name points at the pooled endpoint; using $(host_of "$direct") instead."
+        eval "$name=\$direct"
+    fi
+done
+
 echo "From: $(host_of "$SRC_DATABASE_URL")"
 echo "To:   $(host_of "$DST_DATABASE_URL")"
 echo
