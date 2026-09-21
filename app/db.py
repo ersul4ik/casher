@@ -65,42 +65,42 @@ async def get_or_create_user(
     default_currency: str,
     default_tz_minutes: int,
 ) -> tuple[asyncpg.Record, bool]:
-    """Return (user, whether it was just created)."""
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            created = await conn.fetchrow(
-                """
-                INSERT INTO users (tg_id, username, first_name, api_token, currency, tz_minutes)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (tg_id) DO NOTHING
-                RETURNING *
-                """,
-                tg_id,
-                username,
-                first_name,
-                new_api_token(),
-                default_currency,
-                default_tz_minutes,
-            )
-            if created is not None:
-                await conn.executemany(
-                    "INSERT INTO categories (user_id, name, pos) VALUES ($1, $2, $3)",
-                    [(created["id"], name, i) for i, name in enumerate(DEFAULT_CATEGORIES)],
-                )
-                return created, True
+    """Return (user, whether it was just created).
 
-            existing = await conn.fetchrow(
-                """
-                UPDATE users
-                   SET username = $2, first_name = $3, last_seen_at = now()
-                 WHERE tg_id = $1
-                RETURNING *
-                """,
-                tg_id,
-                username,
-                first_name,
-            )
-            return existing, False
+    This runs before every single update, so it is one statement and no transaction:
+    on a free-tier database each extra round trip is felt as bot lag. `xmax = 0` is
+    true only for the row this statement inserted, which tells a signup from a visit.
+    """
+    row = await pool.fetchrow(
+        """
+        INSERT INTO users (tg_id, username, first_name, api_token, currency, tz_minutes)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (tg_id) DO UPDATE
+            SET username = excluded.username,
+                first_name = excluded.first_name,
+                last_seen_at = now()
+        RETURNING *, (xmax = 0) AS was_inserted
+        """,
+        tg_id,
+        username,
+        first_name,
+        new_api_token(),
+        default_currency,
+        default_tz_minutes,
+    )
+    if not row["was_inserted"]:
+        return row, False
+
+    # ON CONFLICT DO NOTHING keeps this harmless even if the row turns out to be an
+    # old one after all: the default names are already there, so nothing is doubled.
+    await pool.executemany(
+        """
+        INSERT INTO categories (user_id, name, pos) VALUES ($1, $2, $3)
+        ON CONFLICT DO NOTHING
+        """,
+        [(row["id"], name, i) for i, name in enumerate(DEFAULT_CATEGORIES)],
+    )
+    return row, True
 
 
 async def get_user_by_token(pool: asyncpg.Pool, token: str) -> asyncpg.Record | None:
