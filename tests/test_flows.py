@@ -1,7 +1,7 @@
 """Whole-dialog checks: an update goes through the real dispatcher, Telegram is a stub.
 
 These cover the wiring that database tests cannot see — which message the bot reads as
-tags, and which one it still reads as a new spend.
+tags and which one it still reads as a new spend, what the calendar offers to tap.
 
 Requires TEST_DATABASE_URL, see test_integration.py.
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
@@ -21,9 +21,11 @@ from aiogram.types import CallbackQuery, Chat, Message, Update, User
 from app import db
 from app.config import Config
 from app.main import build_dispatcher
+from app.reports import month_name, today_local
 
 TEST_DSN = os.environ.get("TEST_DATABASE_URL", "")
 TG_ID = 4242
+TZ_MINUTES = 360
 
 CONFIG = Config(
     bot_token="123456:AAHnotARealTokenButLongEnoughForAiogram",
@@ -32,7 +34,7 @@ CONFIG = Config(
     webhook_secret="secret",
     port=8080,
     default_currency="KGS",
-    default_tz_minutes=360,
+    default_tz_minutes=TZ_MINUTES,
     admin_ids=frozenset(),
     dedup_window_seconds=90,
 )
@@ -65,26 +67,36 @@ class StubBot(Bot):
             CONFIG.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML)
         )
         self.texts: list[str] = []
+        self.markups: list[object] = []
+        self.alerts: list[str | None] = []
 
     async def __call__(self, method, request_timeout=None):  # type: ignore[override]
         # Only what lands in the chat; a callback answer is a toast, not a message.
-        if type(method).__name__ in {"SendMessage", "EditMessageText"}:
+        name = type(method).__name__
+        if name in {"SendMessage", "EditMessageText"}:
             self.texts.append(method.text)
+            self.markups.append(method.reply_markup)
             return Message(
                 message_id=len(self.texts),
                 date=datetime.now(timezone.utc),
                 chat=CHAT,
                 text=method.text,
             )
+        if name == "AnswerCallbackQuery":
+            self.alerts.append(method.text)
         return True
 
     @property
     def last(self) -> str:
         return self.texts[-1] if self.texts else ""
 
+    @property
+    def last_markup(self):
+        return self.markups[-1] if self.markups else None
+
 
 @unittest.skipUnless(TEST_DSN, "TEST_DATABASE_URL is not set")
-class TagTypingFlowTest(unittest.IsolatedAsyncioTestCase):
+class BotFlowTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.pool = await db.create_pool(TEST_DSN)
         await self.pool.execute(
@@ -204,6 +216,39 @@ class TagTypingFlowTest(unittest.IsolatedAsyncioTestCase):
         await self.send("5 литров")
         self.assertEqual(await self.tags_of(spend_id), ["5 литров"])
         self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM spends"), 1)
+
+    async def test_the_calendar_marks_days_and_opens_one(self) -> None:
+        await self.add_spend_and_categorise("480 кафе")
+        today = today_local(TZ_MINUTES)
+
+        await self.send("📅 Дата")
+        self.assertIn(month_name(today.year, today.month), self.bot.last)
+        markup = self.bot.last_markup
+        days = {
+            button.callback_data: button.text
+            for row in markup.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("cd:")
+        }
+        # Today is bracketed and marked, since a spend has just been made.
+        self.assertEqual(days[f"cd:{today.year}-{today.month}-{today.day}"], f"[{today.day}]•")
+        # A day without spends carries no dot.
+        earlier = [text for data, text in days.items() if not text.endswith("•")]
+        self.assertTrue(earlier or today.day == 1)
+
+        await self.tap(f"cd:{today.year}-{today.month}-{today.day}")
+        self.assertIn("480", self.bot.last)
+
+    async def test_the_calendar_refuses_a_day_that_has_not_happened(self) -> None:
+        await self.send("📅 Дата")
+        tomorrow = today_local(TZ_MINUTES) + timedelta(days=1)
+        await self.tap(f"cd:{tomorrow.year}-{tomorrow.month}-{tomorrow.day}")
+        self.assertEqual(self.bot.alerts[-1], "Этот день ещё не наступил")
+
+    async def test_yesterday_button_reports_the_day_before(self) -> None:
+        await self.send("📊 Вчера")
+        yesterday = today_local(TZ_MINUTES) - timedelta(days=1)
+        self.assertIn(str(yesterday.day), self.bot.last)
 
     async def test_a_menu_tap_ends_the_tag_listening(self) -> None:
         spend_id = await self.add_spend_and_categorise()

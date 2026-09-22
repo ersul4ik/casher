@@ -5,6 +5,8 @@ Button captions are user-facing, so they stay in Russian.
 
 from __future__ import annotations
 
+from datetime import date
+
 import asyncpg
 from aiogram.types import (
     InlineKeyboardButton,
@@ -16,19 +18,26 @@ from aiogram.types import (
 from .reports import PERIOD_TITLES
 
 BTN_DAY = "📊 День"
+BTN_YESTERDAY = "📊 Вчера"
 BTN_WEEK = "📊 Неделя"
 BTN_MONTH = "📊 Месяц"
+BTN_DATE = "📅 Дата"
 BTN_PENDING = "⏳ Без категории"
 BTN_CATEGORIES = "📁 Категории"
 BTN_TAGS = "🏷 Теги"
 BTN_LAST = "🧾 Последние"
+# Off the keyboard since it was needed about once a year, but /export still works — and
+# so does this caption, because Telegram keeps showing the old keyboard until a new one
+# arrives, and someone will tap it tomorrow.
 BTN_EXPORT = "⬇️ CSV"
 
 MENU_BUTTONS = frozenset(
     {
         BTN_DAY,
+        BTN_YESTERDAY,
         BTN_WEEK,
         BTN_MONTH,
+        BTN_DATE,
         BTN_PENDING,
         BTN_CATEGORIES,
         BTN_TAGS,
@@ -44,14 +53,23 @@ def is_menu_button(text: str | None) -> bool:
 
 
 def main_menu() -> ReplyKeyboardMarkup:
+    """Three rows: what happened just now, longer periods, and the reference lists."""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_DAY), KeyboardButton(text=BTN_WEEK), KeyboardButton(text=BTN_MONTH)],
-            [KeyboardButton(text=BTN_PENDING), KeyboardButton(text=BTN_LAST)],
             [
+                KeyboardButton(text=BTN_DAY),
+                KeyboardButton(text=BTN_YESTERDAY),
+                KeyboardButton(text=BTN_DATE),
+            ],
+            [
+                KeyboardButton(text=BTN_WEEK),
+                KeyboardButton(text=BTN_MONTH),
+                KeyboardButton(text=BTN_LAST),
+            ],
+            [
+                KeyboardButton(text=BTN_PENDING),
                 KeyboardButton(text=BTN_CATEGORIES),
                 KeyboardButton(text=BTN_TAGS),
-                KeyboardButton(text=BTN_EXPORT),
             ],
         ],
         resize_keyboard=True,
@@ -201,8 +219,71 @@ def report_menu() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Прошлая неделя", callback_data="rep:week:1"),
                 InlineKeyboardButton(text="Прошлый месяц", callback_data="rep:month:1"),
             ],
+            [InlineKeyboardButton(text="📅 Выбрать дату", callback_data="cal:now")],
         ]
     )
+
+
+# A calendar cell that is not a day: Telegram needs some text, and a dim dot keeps the
+# grid aligned without reading as a number.
+CALENDAR_BLANK = "·"
+WEEKDAYS = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+
+
+def calendar_grid(
+    year: int,
+    month: int,
+    *,
+    title: str,
+    marked: set[int],
+    today: int | None,
+    last_day: int,
+    max_day: int | None,
+    prev_month: tuple[int, int] | None,
+    next_month: tuple[int, int] | None,
+) -> InlineKeyboardMarkup:
+    """A month of tappable days.
+
+    ``marked`` are the days that have spends — the whole point of showing a grid rather
+    than asking for a date. ``max_day`` cuts off the future: the current month has no
+    tomorrow worth tapping. ``last_day`` is how long the month is, and the leading blanks
+    line the first day up under its weekday, counting from Monday.
+    """
+    blank = InlineKeyboardButton(text=CALENDAR_BLANK, callback_data="noop")
+
+    nav = [
+        InlineKeyboardButton(
+            text="‹", callback_data=f"cal:{prev_month[0]}-{prev_month[1]}"
+        )
+        if prev_month
+        else blank,
+        InlineKeyboardButton(text=title, callback_data=f"cm:{year}-{month}"),
+        InlineKeyboardButton(
+            text="›", callback_data=f"cal:{next_month[0]}-{next_month[1]}"
+        )
+        if next_month
+        else blank,
+    ]
+    rows = [nav, [InlineKeyboardButton(text=name, callback_data="noop") for name in WEEKDAYS]]
+
+    # Monday of the week the 1st falls into, as a day number that may be negative.
+    first_weekday = date(year, month, 1).weekday()
+    cells: list[InlineKeyboardButton] = [blank] * first_weekday
+    for day in range(1, last_day + 1):
+        # The rest of the current month is still ahead; drawing it as dead cells would
+        # only add empty rows, so the grid simply ends at today.
+        if max_day is not None and day > max_day:
+            break
+        caption = f"[{day}]" if day == today else str(day)
+        if day in marked:
+            caption += "•"
+        cells.append(InlineKeyboardButton(text=caption, callback_data=f"cd:{year}-{month}-{day}"))
+    while len(cells) % 7:
+        cells.append(blank)
+
+    rows += [cells[i : i + 7] for i in range(0, len(cells), 7)]
+    rows.append([InlineKeyboardButton(text="📊 Месяц целиком", callback_data=f"cm:{year}-{month}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def entity_manager(kind: str, entities: list[asyncpg.Record]) -> InlineKeyboardMarkup:

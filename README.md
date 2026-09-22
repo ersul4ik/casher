@@ -51,11 +51,12 @@ The schema is created on start, so there is nothing to migrate by hand.
 |---|---|
 | `/start` | registration, plus the bottom keyboard |
 | `/report` | report menu: today, yesterday, this and last week, this and last month |
-| `/day` `/week` `/month` | jump straight to a period; `←` `→` page through earlier ones |
+| `/day` `/yesterday` `/week` `/month` | jump straight to a period; `←` `→` page through earlier ones |
+| `/date` | calendar: pick any past day, or the month as a whole |
 | `/pending` | tag the spends still waiting for a category |
 | `/last` | recent spends: open one by its number to tag, annotate or delete it |
 | `/cats` | categories: add, remove |
-| `/export` | CSV export of everything |
+| `/export` | CSV export of everything; a command only, it outlived its button |
 | `/settings`, `/currency USD`, `/tz +6` | currency and time zone |
 | `/token`, `/newtoken` | the shortcut token, and reissuing it |
 | `/stats` | service-wide summary, `ADMIN_IDS` only |
@@ -101,6 +102,20 @@ The same card opens for any past spend: `/last`, then tap its number.
 Every report has a **🏷 По тегам** button — the same period broken down by tag instead of
 category. A spend carrying several tags counts towards each of them, so the tag totals can exceed
 the overall total; the report says so outright.
+
+Reaching a particular date takes one tap rather than a dozen presses of `←`: **📅 Дата** opens the
+month as a grid, where a dot next to a number means something was spent that day and brackets mark
+today. Days that have not happened yet are not drawn at all. Tapping a day opens the usual day
+report, arrows and all; the heading of the grid opens the whole month.
+
+```
+        ‹   Сентябрь 2026   ›
+   Пн    Вт    Ср    Чт    Пт    Сб    Вс
+    ·     1     2    3•     4    5•     6
+    7    8•     9    10   11•    12    13
+   14•   15   16•   17•    18    19    20
+   21  [22]•
+```
 
 ## Spend intake: `POST /spend`
 

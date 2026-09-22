@@ -285,6 +285,36 @@ async def suggest_category(
     )
 
 
+async def days_with_spends(
+    pool: asyncpg.Pool,
+    user_id: int,
+    *,
+    start: datetime,
+    end: datetime,
+    tz_minutes: int,
+) -> set[int]:
+    """Day numbers inside the period that carry at least one spend.
+
+    The calendar marks them, so a month shows at a glance where there is anything to
+    look at. Dates are the user's own: a spend just before local midnight belongs to
+    the day they were living, not to the one UTC was having.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT
+               ((occurred_at AT TIME ZONE 'UTC' + make_interval(mins => $4))::date) AS day
+          FROM spends
+         WHERE user_id = $1 AND status <> 'ignored'
+           AND occurred_at >= $2 AND occurred_at < $3
+        """,
+        user_id,
+        start,
+        end,
+        tz_minutes,
+    )
+    return {row["day"].day for row in rows}
+
+
 async def attach_message_id(pool: asyncpg.Pool, spend_id: int, message_id: int) -> None:
     await pool.execute(
         "UPDATE spends SET tg_message_id = $2 WHERE id = $1", spend_id, message_id

@@ -9,7 +9,8 @@ import csv
 import html
 import io
 import re
-from datetime import datetime
+from calendar import monthrange
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable
 
@@ -23,7 +24,17 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message, TelegramObj
 
 from . import db, keyboards, notifier
 from .config import Config
-from .reports import build_entity_summary, build_report, build_tag_report, money, user_tz
+from .reports import (
+    build_entity_summary,
+    build_report,
+    build_tag_report,
+    day_offset,
+    money,
+    month_name,
+    month_offset,
+    today_local,
+    user_tz,
+)
 
 router = Router()
 
@@ -254,7 +265,8 @@ async def cmd_help(msg: Message) -> None:
     await msg.answer(
         "<b>Что умею</b>\n\n"
         "📊 /report — отчёты за день, неделю, месяц с переключением периодов\n"
-        "/day /week /month — сразу нужный период\n"
+        "/day /yesterday /week /month — сразу нужный период\n"
+        "📅 /date — календарь: выбрать любое число, точка у дня значит, что были траты\n"
         "🏷 В любом отчёте есть кнопка «По тегам» — сколько ушло на воду, кофе, курут\n"
         "⏳ /pending — разметить траты, оставшиеся без категории\n"
         "🧾 /last — последние траты: открыть по номеру, поставить теги, "
@@ -347,6 +359,12 @@ async def cmd_day(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> Non
     await _send_report(msg, pool, user, "day")
 
 
+@router.message(Command("yesterday"))
+@router.message(F.text == keyboards.BTN_YESTERDAY)
+async def cmd_yesterday(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    await _send_report(msg, pool, user, "day", 1)
+
+
 @router.message(Command("week"))
 @router.message(F.text == keyboards.BTN_WEEK)
 async def cmd_week(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
@@ -374,6 +392,119 @@ async def cb_tag_report(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Rec
     offset = int(raw_offset)
     text = await build_tag_report(pool, user, kind, offset)
     await _safe_edit(cb, text, keyboards.report_nav(kind, offset, by_tag=True))
+    await cb.answer()
+
+
+# --- calendar ----------------------------------------------------------------
+
+
+CALENDAR_HINT = (
+    "Выбери день — покажу траты за него.\n"
+    "<i>Точка у числа значит, что в этот день что-то потрачено.</i>"
+)
+
+
+def _shift_month(year: int, month: int, step: int) -> tuple[int, int]:
+    total = year * 12 + (month - 1) + step
+    return total // 12, total % 12 + 1
+
+
+async def _calendar(
+    pool: asyncpg.Pool, user: asyncpg.Record, year: int, month: int
+) -> tuple[str, Any]:
+    tz_minutes = user["tz_minutes"]
+    tz = user_tz(tz_minutes)
+    today = today_local(tz_minutes)
+    last_day = monthrange(year, month)[1]
+
+    start_local = datetime(year, month, 1, tzinfo=tz)
+    end_local = datetime(*_shift_month(year, month, 1), 1, tzinfo=tz)
+    marked = await db.days_with_spends(
+        pool,
+        user["id"],
+        start=start_local.astimezone(timezone.utc),
+        end=end_local.astimezone(timezone.utc),
+        tz_minutes=tz_minutes,
+    )
+
+    current = (year, month) == (today.year, today.month)
+    title = month_name(year, month)
+    markup = keyboards.calendar_grid(
+        year,
+        month,
+        title=title,
+        marked=marked,
+        today=today.day if current else None,
+        last_day=last_day,
+        # Tomorrow has nothing to show, so the rest of the month is not tappable.
+        max_day=today.day if current else None,
+        prev_month=_shift_month(year, month, -1),
+        next_month=None if current else _shift_month(year, month, 1),
+    )
+    return f"📅 <b>{title}</b>\n\n{CALENDAR_HINT}", markup
+
+
+def _parse_month(raw: str, user: asyncpg.Record) -> tuple[int, int] | None:
+    if raw == "now":
+        today = today_local(user["tz_minutes"])
+        return today.year, today.month
+    try:
+        year, month = (int(part) for part in raw.split("-", 1))
+    except ValueError:
+        return None
+    return (year, month) if 1 <= month <= 12 and 2000 <= year <= 2100 else None
+
+
+@router.message(Command("date"))
+@router.message(F.text == keyboards.BTN_DATE)
+async def cmd_calendar(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    text, markup = await _calendar(pool, user, *_parse_month("now", user))
+    await msg.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("cal:"))
+async def cb_calendar(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    month = _parse_month(cb.data.split(":", 1)[1], user)
+    if month is None:
+        await cb.answer("Не разобрал месяц", show_alert=True)
+        return
+    text, markup = await _calendar(pool, user, *month)
+    await _safe_edit(cb, text, markup)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cd:"))
+async def cb_calendar_day(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
+    try:
+        year, month, day = (int(part) for part in cb.data.split(":", 1)[1].split("-"))
+        picked = date(year, month, day)
+    except ValueError:
+        await cb.answer("Не разобрал дату", show_alert=True)
+        return
+
+    offset = day_offset(picked, user["tz_minutes"])
+    if offset < 0:
+        await cb.answer("Этот день ещё не наступил", show_alert=True)
+        return
+    text = await build_report(pool, user, "day", offset)
+    await _safe_edit(cb, text, keyboards.report_nav("day", offset))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cm:"))
+async def cb_calendar_month(
+    cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
+    month = _parse_month(cb.data.split(":", 1)[1], user)
+    if month is None:
+        await cb.answer("Не разобрал месяц", show_alert=True)
+        return
+    offset = month_offset(*month, user["tz_minutes"])
+    if offset < 0:
+        await cb.answer("Этот месяц ещё не наступил", show_alert=True)
+        return
+    text = await build_report(pool, user, "month", offset)
+    await _safe_edit(cb, text, keyboards.report_nav("month", offset))
     await cb.answer()
 
 

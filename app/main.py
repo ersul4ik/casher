@@ -26,6 +26,7 @@ log = logging.getLogger("cacher")
 # Descriptions show up in the Telegram command menu, so they stay in Russian.
 BOT_COMMANDS = [
     BotCommand(command="report", description="Отчёт: день / неделя / месяц"),
+    BotCommand(command="date", description="Календарь: траты за любое число"),
     BotCommand(command="pending", description="Разметить траты без категории"),
     BotCommand(command="last", description="Последние траты"),
     BotCommand(command="cats", description="Категории и траты по ним"),

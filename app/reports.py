@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import asyncpg
@@ -91,6 +91,24 @@ def resolve_period(kind: str, offset: int, tz_minutes: int) -> Period:
         start_local=start_local,
         end_local=end_local,
     )
+
+
+def today_local(tz_minutes: int) -> date:
+    return datetime.now(timezone.utc).astimezone(user_tz(tz_minutes)).date()
+
+
+def day_offset(target: date, tz_minutes: int) -> int:
+    """How many days back the given date is, in the shape reports already speak."""
+    return (today_local(tz_minutes) - target).days
+
+
+def month_offset(year: int, month: int, tz_minutes: int) -> int:
+    today = today_local(tz_minutes)
+    return (today.year - year) * 12 + (today.month - month)
+
+
+def month_name(year: int, month: int) -> str:
+    return f"{_MONTHS_NOMINATIVE[month - 1]} {year}"
 
 
 def period_title(period: Period) -> str:

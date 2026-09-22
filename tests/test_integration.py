@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from app import db
@@ -347,6 +347,50 @@ class IntegrationTest(unittest.IsolatedAsyncioTestCase):
             await db.attach_tags_by_name(self.pool, bob["id"], spend["id"], ["чай"]), []
         )
         self.assertEqual(len(await db.tags_for_spend(self.pool, spend["id"])), 3)
+
+    async def test_calendar_marks_days_in_the_users_own_time_zone(self) -> None:
+        user, _ = await self.make_user(1032)
+        category = (await db.list_categories(self.pool, user["id"]))[0]
+        tz = timezone(timedelta(minutes=BISHKEK))
+
+        async def spend_at(local: datetime, *, status: str = "done") -> None:
+            row = await db.create_spend(
+                self.pool,
+                user_id=user["id"],
+                amount=Decimal("100.00"),
+                currency="KGS",
+                raw=None,
+                source="manual",
+                category_id=category["id"],
+                occurred_at=local.replace(tzinfo=tz).astimezone(timezone.utc),
+            )
+            if status != "done":
+                await self.pool.execute(
+                    "UPDATE spends SET status = $2 WHERE id = $1", row["id"], status
+                )
+
+        # 23:30 on the 5th in Bishkek is already the 6th in UTC — it must land on the 5th.
+        await spend_at(datetime(2026, 3, 5, 23, 30))
+        await spend_at(datetime(2026, 3, 17, 12, 0))
+        await spend_at(datetime(2026, 3, 20, 9, 0), status="ignored")
+
+        start = datetime(2026, 3, 1, tzinfo=tz).astimezone(timezone.utc)
+        end = datetime(2026, 4, 1, tzinfo=tz).astimezone(timezone.utc)
+        days = await db.days_with_spends(
+            self.pool, user["id"], start=start, end=end, tz_minutes=BISHKEK
+        )
+        # The "not a spend" day is not marked: there is nothing to look at there.
+        self.assertEqual(days, {5, 17})
+
+        # Another month, and another user's spends, stay out of it.
+        february = await db.days_with_spends(
+            self.pool,
+            user["id"],
+            start=datetime(2026, 2, 1, tzinfo=tz).astimezone(timezone.utc),
+            end=start,
+            tz_minutes=BISHKEK,
+        )
+        self.assertEqual(february, set())
 
     async def test_tag_report_and_untagged_count(self) -> None:
         user, _ = await self.make_user(1022)

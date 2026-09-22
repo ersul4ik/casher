@@ -14,8 +14,8 @@ from unittest import mock
 from app import keyboards
 from app.config import _base_url
 from app.db import normalize_dsn
-from app.handlers import MANUAL_SPEND_RE, parse_tag_names
-from app.reports import money, period_title, resolve_period
+from app.handlers import MANUAL_SPEND_RE, _shift_month, parse_tag_names
+from app.reports import day_offset, money, month_offset, period_title, resolve_period, today_local
 from app.webapi import (
     amount_from_raw,
     currency_from_raw,
@@ -118,6 +118,70 @@ class TestMenuButtons(unittest.TestCase):
     def test_ordinary_text_passes_through(self) -> None:
         for text in ("Швепс, лёд", "две бутылки воды", "CSV", "", None):
             self.assertFalse(keyboards.is_menu_button(text), text)
+
+
+class TestCalendarGrid(unittest.TestCase):
+    """The grid has to line days up under their weekday and never offer the future."""
+
+    def grid(self, year: int, month: int, **kwargs):
+        options = dict(
+            title=f"{year}-{month}",
+            marked=set(),
+            today=None,
+            last_day=31,
+            max_day=None,
+            prev_month=(year, month - 1),
+            next_month=(year, month + 1),
+        )
+        options.update(kwargs)
+        return keyboards.calendar_grid(year, month, **options)
+
+    def days(self, markup) -> list[str]:
+        return [
+            button.text
+            for row in markup.inline_keyboard
+            for button in row
+            if button.callback_data.startswith("cd:")
+        ]
+
+    def test_first_day_sits_under_its_weekday(self) -> None:
+        # 1 August 2026 is a Saturday, so five blanks come before it.
+        rows = self.grid(2026, 8, last_day=31).inline_keyboard
+        first_week = rows[2]
+        self.assertEqual(
+            [b.text for b in first_week[:5]], [keyboards.CALENDAR_BLANK] * 5
+        )
+        self.assertEqual(first_week[5].text, "1")
+
+    def test_every_row_holds_a_full_week(self) -> None:
+        for year, month, last in ((2026, 8, 31), (2024, 2, 29), (2026, 9, 30)):
+            rows = self.grid(year, month, last_day=last).inline_keyboard[2:-1]
+            self.assertTrue(all(len(row) == 7 for row in rows), (year, month))
+
+    def test_marks_and_today(self) -> None:
+        markup = self.grid(2026, 9, last_day=30, marked={3, 22}, today=22)
+        days = self.days(markup)
+        self.assertIn("3•", days)
+        self.assertIn("[22]•", days)
+        self.assertIn("4", days)
+
+    def test_the_future_is_not_offered(self) -> None:
+        markup = self.grid(2026, 9, last_day=30, today=22, max_day=22, next_month=None)
+        numbers = [int(text.strip("[]•")) for text in self.days(markup)]
+        self.assertEqual(numbers, list(range(1, 23)))
+        # No next-month arrow either, and no trailing row of nothing.
+        arrows = [b.text for b in markup.inline_keyboard[0]]
+        self.assertEqual(arrows[2], keyboards.CALENDAR_BLANK)
+        self.assertTrue(
+            any(b.callback_data.startswith("cd:") for b in markup.inline_keyboard[-2])
+        )
+
+    def test_a_day_carries_its_date(self) -> None:
+        markup = self.grid(2026, 9, last_day=30)
+        first = next(
+            b for row in markup.inline_keyboard for b in row if b.text == "1"
+        )
+        self.assertEqual(first.callback_data, "cd:2026-9-1")
 
 
 class TestTagNames(unittest.TestCase):
@@ -228,6 +292,34 @@ class TestBaseUrl(unittest.TestCase):
     def test_nothing_means_long_polling(self) -> None:
         self.assertEqual(self.run_with(), "")
         self.assertEqual(self.run_with(BASE_URL="  "), "")
+
+
+class TestDateOffsets(unittest.TestCase):
+    """A picked date becomes the offset the reports already understand."""
+
+    def test_today_and_yesterday(self) -> None:
+        today = today_local(BISHKEK)
+        self.assertEqual(day_offset(today, BISHKEK), 0)
+        self.assertEqual(day_offset(today - timedelta(days=1), BISHKEK), 1)
+        self.assertEqual(day_offset(today - timedelta(days=40), BISHKEK), 40)
+
+    def test_tomorrow_is_negative_so_it_can_be_refused(self) -> None:
+        self.assertEqual(day_offset(today_local(BISHKEK) + timedelta(days=1), BISHKEK), -1)
+
+    def test_months_count_back_across_the_year(self) -> None:
+        today = today_local(BISHKEK)
+        self.assertEqual(month_offset(today.year, today.month, BISHKEK), 0)
+        self.assertEqual(month_offset(today.year - 1, today.month, BISHKEK), 12)
+        self.assertEqual(month_offset(today.year - 1, 12, BISHKEK), today.month)
+
+    def test_time_zone_decides_which_day_it_is(self) -> None:
+        # Bishkek is a day ahead of UTC-11 for most of the day; the dates may differ by one.
+        self.assertLessEqual((today_local(BISHKEK) - today_local(-660)).days, 1)
+
+    def test_month_shift_wraps_the_year(self) -> None:
+        self.assertEqual(_shift_month(2026, 1, -1), (2025, 12))
+        self.assertEqual(_shift_month(2026, 12, 1), (2027, 1))
+        self.assertEqual(_shift_month(2026, 5, -17), (2024, 12))
 
 
 class TestDsn(unittest.TestCase):
