@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import os
 import unittest
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
@@ -69,10 +71,18 @@ class StubBot(Bot):
         self.texts: list[str] = []
         self.markups: list[object] = []
         self.alerts: list[str | None] = []
+        self.methods: list[str] = []
+        # Telegram stops allowing edits once a message is two days old.
+        self.refuse_edits = False
 
     async def __call__(self, method, request_timeout=None):  # type: ignore[override]
         # Only what lands in the chat; a callback answer is a toast, not a message.
         name = type(method).__name__
+        self.methods.append(name)
+        if name == "EditMessageText" and self.refuse_edits:
+            raise TelegramBadRequest(
+                method=method, message="Bad Request: message can't be edited"
+            )
         if name in {"SendMessage", "EditMessageText"}:
             self.texts.append(method.text)
             self.markups.append(method.reply_markup)
@@ -249,6 +259,89 @@ class BotFlowTest(unittest.IsolatedAsyncioTestCase):
         await self.send("📊 Вчера")
         yesterday = today_local(TZ_MINUTES) - timedelta(days=1)
         self.assertIn(str(yesterday.day), self.bot.last)
+
+    async def test_every_button_on_every_screen_answers(self) -> None:
+        """Walk the whole interface, tapping everything that is drawn.
+
+        A button Telegram shows must do something. If a handler raises or simply forgets
+        to answer the callback, the button spins for half a minute and the bot looks
+        frozen — which is exactly the kind of dead end that is invisible in a unit test.
+        Destructive buttons are pressed too: deleting the thing a later button points at
+        is itself a case worth surviving.
+        """
+        await self.add_spend_and_categorise("480 кафе")
+        await self.send("вода, кофе")
+        await self.send("1470")
+        for entry in ("📊 День", "📊 Вчера", "📅 Дата", "🧾 Последние", "📁 Категории", "🏷 Теги"):
+            await self.send(entry)
+        await self.send("/report")
+        await self.send("/pending")
+
+        queued: list[str] = []
+        seen: set[str] = set()
+        # Paging back through reports and days never runs out, so a few of each kind is
+        # enough; what matters is that no kind of button goes untried.
+        per_kind: Counter[str] = Counter()
+
+        def kind_of(data: str) -> str:
+            return data.split(":", 1)[0]
+
+        def collect() -> None:
+            for markup in self.bot.markups:
+                for row in getattr(markup, "inline_keyboard", []):
+                    for button in row:
+                        data = button.callback_data
+                        if not data or data in seen or per_kind[kind_of(data)] >= 3:
+                            continue
+                        seen.add(data)
+                        per_kind[kind_of(data)] += 1
+                        queued.append(data)
+
+        collect()
+        pressed: set[str] = set()
+        while queued:
+            data = queued.pop(0)
+            before = len(self.bot.methods)
+            await self.tap(data)
+            pressed.add(kind_of(data))
+            self.assertIn(
+                "AnswerCallbackQuery",
+                self.bot.methods[before:],
+                f"кнопка {data} ничего не ответила — она будет крутиться",
+            )
+            collect()
+
+        # Every kind of button the bot can draw was tapped, and every one of them replied.
+        self.assertEqual(
+            pressed,
+            {
+                "rep", "rtag", "cal", "cd", "cm", "noop",
+                "cat", "catadd", "catlist", "catsum", "catdel",
+                "taglist", "tagsum", "tagdel", "tags", "tg", "tgnew",
+                "sp", "skip", "edit", "new", "note", "del", "delask", "delyes",
+            },
+        )
+
+    async def test_an_unedittable_message_still_answers(self) -> None:
+        # Telegram refuses to edit its own message after two days. A button on an old
+        # report must still do something rather than raise and spin forever.
+        spend_id = await self.add_spend_and_categorise()
+        self.bot.refuse_edits = True
+        before = len(self.bot.methods)
+
+        await self.tap(f"sp:{spend_id}")
+        # The edit was refused, so the card arrived as a new message, and the button
+        # was answered rather than left spinning.
+        after = self.bot.methods[before:]
+        self.assertEqual(after, ["EditMessageText", "SendMessage", "AnswerCallbackQuery"])
+        self.assertIn("480", self.bot.last)
+
+    async def test_a_broken_button_stops_spinning(self) -> None:
+        # Nothing the bot draws looks like this, but a handler that throws for any
+        # reason must not leave the button spinning with no explanation.
+        with self.assertRaises(ValueError):
+            await self.tap("cat:непонятно:1")
+        self.assertEqual(self.bot.alerts[-1], "Что-то сломалось, попробуй ещё раз")
 
     async def test_a_menu_tap_ends_the_tag_listening(self) -> None:
         spend_id = await self.add_spend_and_categorise()

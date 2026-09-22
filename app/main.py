@@ -19,7 +19,7 @@ from aiohttp import web
 
 from . import db, webapi
 from .config import Config, load_config
-from .handlers import UserMiddleware, router
+from .handlers import CallbackSafetyNet, UserMiddleware, router
 
 log = logging.getLogger("cacher")
 
@@ -43,6 +43,9 @@ def build_dispatcher(pool, config: Config) -> Dispatcher:
     dp["pool"] = pool
     dp["config"] = config
     dp.message.outer_middleware(UserMiddleware())
+    # Outermost, so a button also stops spinning when the failure is in the middleware
+    # below it — an unreachable database, say.
+    dp.callback_query.outer_middleware(CallbackSafetyNet())
     dp.callback_query.outer_middleware(UserMiddleware())
     dp.include_router(router)
     return dp

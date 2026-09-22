@@ -10,6 +10,7 @@ import html
 import io
 import re
 from calendar import monthrange
+from contextlib import suppress
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable
@@ -68,6 +69,29 @@ class Flow(StatesGroup):
     category_name = State()
     tag_names = State()
     note_text = State()
+
+
+class CallbackSafetyNet(BaseMiddleware):
+    """Stop the spinner on a button even when the handler behind it fails.
+
+    Telegram keeps a tapped button spinning until the bot answers the callback, so an
+    unhandled error reads as a frozen bot and hides what actually went wrong. The error
+    still propagates to be logged; the user gets told to try again.
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        try:
+            return await handler(event, data)
+        except Exception:
+            if isinstance(event, CallbackQuery):
+                with suppress(Exception):
+                    await event.answer("Что-то сломалось, попробуй ещё раз", show_alert=True)
+            raise
 
 
 class UserMiddleware(BaseMiddleware):
@@ -219,12 +243,29 @@ async def _show_tag_picker(
     )
 
 
+# Telegram refuses to edit a message once it is two days old, and there is no way to
+# know that in advance: a report from last week looks exactly like one from a minute ago.
+_UNEDITABLE = ("can't be edited", "message to edit not found", "MESSAGE_ID_INVALID")
+
+
 async def _safe_edit(cb: CallbackQuery, text: str, markup=None) -> None:
-    try:
-        await cb.message.edit_text(text, reply_markup=markup)
-    except TelegramBadRequest as exc:
-        if "message is not modified" not in str(exc):
-            raise
+    """Redraw the message behind a button, or send a new one when it cannot be redrawn.
+
+    Without the fallback an old screen turns into a dead end: every button on it raises,
+    the callback goes unanswered, and the tap looks like the bot has frozen.
+    """
+    message = cb.message if isinstance(cb.message, Message) else None
+    if message is not None:
+        try:
+            await message.edit_text(text, reply_markup=markup)
+            return
+        except TelegramBadRequest as exc:
+            reason = str(exc)
+            if "message is not modified" in reason:
+                return
+            if not any(known in reason for known in _UNEDITABLE):
+                raise
+    await cb.bot.send_message(cb.from_user.id, text, reply_markup=markup)
 
 
 def _setup_instructions(config: Config, api_token: str) -> str:
@@ -606,7 +647,9 @@ async def cb_delete_untagged(
     spend_id = int(cb.data.split(":", 1)[1])
     if await db.delete_spend(pool, user["id"], spend_id):
         await _safe_edit(cb, "🗑 Запись удалена")
-    await cb.answer()
+        await cb.answer("Удалено")
+        return
+    await cb.answer("Запись не найдена", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("delask:"))
@@ -767,10 +810,20 @@ TAG_LIST_TEXT = (
 )
 
 
+EMPTY_LIST_TEXT = {
+    "cat": "📁 <b>Категории</b>\n\nНе осталось ни одной — добавь первую кнопкой ниже.",
+    "tag": "🏷 <b>Теги</b>\n\nТегов больше нет. Новые ставятся под тратой, кнопкой «🏷 Теги».",
+}
+
+
 async def _entity_list(pool: asyncpg.Pool, user: asyncpg.Record, kind: str):
     if kind == "tag":
-        return TAG_LIST_TEXT, await db.list_tags(pool, user["id"], limit=50)
-    return CATEGORY_LIST_TEXT, await db.list_categories(pool, user["id"])
+        entities = await db.list_tags(pool, user["id"], limit=50)
+        full = TAG_LIST_TEXT
+    else:
+        entities = await db.list_categories(pool, user["id"])
+        full = CATEGORY_LIST_TEXT
+    return (full if entities else EMPTY_LIST_TEXT[kind]), entities
 
 
 @router.message(Command("cats"))
