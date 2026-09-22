@@ -110,7 +110,7 @@ git push
    ```
    База готова
    HTTP слушает порт 10000, приём трат на POST /spend
-   Вебхук Телеграма: https://casher-arx3.onrender.com/tg/...
+   Вебхук Телеграма: https://casher-eu.onrender.com/tg/...
    ```
 
 Свой адрес сервис узнаёт сам: Render кладёт его в `RENDER_EXTERNAL_URL`, оттуда бот и берёт
@@ -133,7 +133,7 @@ git push
 5. Проверить приём пушей (токен взять из `/token`):
 
 ```bash
-curl -X POST https://casher-arx3.onrender.com/spend \
+curl -X POST https://casher-eu.onrender.com/spend \
   -H "X-Token: <твой токен>" \
   -H "Content-Type: application/json" \
   -d '{"raw": "Успещная операция по QR. Сумма: 1470.00 KGS"}'
@@ -152,7 +152,7 @@ Free-сервис Render засыпает после 15 минут без зап
 1. [cron-job.org](https://cron-job.org) → регистрация (бесплатно, без карты).
 2. **Create cronjob**:
    - Title: `casher keep-alive`
-   - URL: `https://casher-arx3.onrender.com/health`
+   - URL: `https://casher-eu.onrender.com/health`
    - Schedule: **Every 5 minutes**
 3. Save. На вкладке History должны идти ответы `200`.
 

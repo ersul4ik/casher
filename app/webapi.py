@@ -143,6 +143,8 @@ async def handle_spend(request: web.Request) -> web.Response:
 
     amount = parse_amount(data.get("amount")) or amount_from_raw(raw)
     if amount is None:
+        # The usual cause is a shortcut run by hand, with no notification to pass on.
+        log.info("Rejected a request with no amount in it, %s characters of text", len(raw))
         return web.json_response({"error": "no amount"}, status=400)
 
     currency = (
@@ -158,6 +160,10 @@ async def handle_spend(request: web.Request) -> web.Response:
         return web.json_response({"status": "duplicate", "id": duplicate["id"]})
 
     merchant = str(data.get("merchant") or "").strip()[:64] or merchant_from_raw(raw)
+    # Logged so the Render log answers the only question worth asking when a push seems
+    # lost: did it reach the service at all, or is the phone not sending it? The text of
+    # the push is not repeated here — it is already in the database.
+    log.info("Accepted %s %s%s", amount, currency, f" at {merchant}" if merchant else "")
     spend = await db.create_spend(
         pool,
         user_id=user["id"],

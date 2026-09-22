@@ -32,7 +32,7 @@ Shortcuts смотрит на приложение-отправитель, а н
 сделай вторую автоматизацию по тем же шагам, указав на шаге 3 приложение Wallet.
 
 **Что подготовить:** написать боту `/token` и держать под рукой адрес
-(`https://casher-arx3.onrender.com/spend`) и личный токен.
+(`https://casher-eu.onrender.com/spend`) и личный токен.
 
 Названия пунктов ниже даны как в русской локализации, в скобках — как в английской.
 
@@ -70,7 +70,7 @@ Shortcuts смотрит на приложение-отправитель, а н
    в фоне и на заблокированном экране.
 6. **Далее** (Next) → **Добавить действие** (Add Action) →
    **Получить содержимое URL** (Get Contents of URL):
-   - **URL**: `https://casher-arx3.onrender.com/spend`
+   - **URL**: `https://casher-eu.onrender.com/spend`
    - развернуть **Подробнее** (Show More) → **Метод** (Method): `POST`
    - **Заголовки** (Headers) → добавить `X-Token` → вставить свой токен из `/token`
    - **Тело запроса** (Request Body): `JSON`
@@ -110,7 +110,7 @@ Shortcuts смотрит на приложение-отправитель, а н
 Пуш банка:
 
 ```bash
-curl -X POST https://casher-arx3.onrender.com/spend \
+curl -X POST https://casher-eu.onrender.com/spend \
   -H "X-Token: <твой токен>" \
   -H "Content-Type: application/json" \
   -d '{"raw": "Успещная операция по QR. Сумма: 1470.00 KGS"}'
@@ -119,7 +119,7 @@ curl -X POST https://casher-arx3.onrender.com/spend \
 Пуш Apple Pay:
 
 ```bash
-curl -X POST https://casher-arx3.onrender.com/spend \
+curl -X POST https://casher-eu.onrender.com/spend \
   -H "X-Token: <твой токен>" \
   -H "Content-Type: application/json" \
   -d '{"raw": "OPTIMA BANK OJSC\nArabesk  Bishkek\n470,00 KGS"}'
