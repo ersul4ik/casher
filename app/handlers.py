@@ -422,18 +422,18 @@ async def cmd_month(msg: Message, pool: asyncpg.Pool, user: asyncpg.Record) -> N
 async def cb_report(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
     _, kind, raw_offset = cb.data.split(":", 2)
     offset = int(raw_offset)
+    await cb.answer()
     text = await build_report(pool, user, kind, offset)
     await _safe_edit(cb, text, keyboards.report_nav(kind, offset))
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("rtag:"))
 async def cb_tag_report(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record) -> None:
     _, kind, raw_offset = cb.data.split(":", 2)
     offset = int(raw_offset)
+    await cb.answer()
     text = await build_tag_report(pool, user, kind, offset)
     await _safe_edit(cb, text, keyboards.report_nav(kind, offset, by_tag=True))
-    await cb.answer()
 
 
 # --- calendar ----------------------------------------------------------------
@@ -509,9 +509,9 @@ async def cb_calendar(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Recor
     if month is None:
         await cb.answer("Не разобрал месяц", show_alert=True)
         return
+    await cb.answer()
     text, markup = await _calendar(pool, user, *month)
     await _safe_edit(cb, text, markup)
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("cd:"))
@@ -527,9 +527,9 @@ async def cb_calendar_day(cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.R
     if offset < 0:
         await cb.answer("Этот день ещё не наступил", show_alert=True)
         return
+    await cb.answer()
     text = await build_report(pool, user, "day", offset)
     await _safe_edit(cb, text, keyboards.report_nav("day", offset))
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("cm:"))
@@ -544,9 +544,9 @@ async def cb_calendar_month(
     if offset < 0:
         await cb.answer("Этот месяц ещё не наступил", show_alert=True)
         return
+    await cb.answer()
     text = await build_report(pool, user, "month", offset)
     await _safe_edit(cb, text, keyboards.report_nav("month", offset))
-    await cb.answer()
 
 
 # --- tagging spends ----------------------------------------------------------
@@ -591,9 +591,9 @@ async def cb_pick_category(
     if spend is None:
         await cb.answer("Запись не найдена", show_alert=True)
         return
+    await cb.answer(spend["category_name"])
     # Tagging usually follows the category, so the card is already listening for tags.
     await _show_spend(cb, pool, user, spend["id"], state, spend)
-    await cb.answer(spend["category_name"])
 
 
 @router.callback_query(F.data.startswith("skip:"))
@@ -605,10 +605,10 @@ async def cb_skip(
     if spend is None:
         await cb.answer("Запись не найдена", show_alert=True)
         return
+    await cb.answer("Не расход")
     # Nothing left to tag here, so the card stops listening for tags.
     await state.clear()
     await _show_spend(cb, pool, user, spend_id, spend=spend)
-    await cb.answer("Не расход")
 
 
 @router.callback_query(F.data.startswith("sp:"))
@@ -675,8 +675,8 @@ async def cb_delete_confirmed(
     # There is no card left to type tags into.
     await state.clear()
     if await db.delete_spend(pool, user["id"], spend_id):
-        await _safe_edit(cb, "🗑 Трата удалена")
         await cb.answer("Удалено")
+        await _safe_edit(cb, "🗑 Трата удалена")
     else:
         await cb.answer("Запись не найдена", show_alert=True)
 
@@ -702,8 +702,8 @@ async def cb_toggle_tag(
     if added is None:
         await cb.answer("Тег не найден", show_alert=True)
         return
-    await _show_tag_picker(cb, pool, user, spend_id, state)
     await cb.answer("Отмечен" if added else "Снят")
+    await _show_tag_picker(cb, pool, user, spend_id, state)
 
 
 @router.callback_query(F.data.startswith("tgnew:"))

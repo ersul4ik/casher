@@ -322,6 +322,22 @@ class BotFlowTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_the_spinner_stops_before_the_screen_is_redrawn(self) -> None:
+        # The spinner on a tapped button is what reads as "the bot froze", and it stops
+        # only on the answer. Whatever the redraw costs, the answer goes first.
+        await self.send("1470")
+        spend_id = await self.pool.fetchval("SELECT id FROM spends ORDER BY id DESC LIMIT 1")
+        category_id = (await db.list_categories(self.pool, await self.user_id()))[0]["id"]
+
+        before = len(self.bot.methods)
+        await self.tap(f"cat:{spend_id}:{category_id}")
+        after = self.bot.methods[before:]
+        self.assertLess(
+            after.index("AnswerCallbackQuery"),
+            after.index("EditMessageText"),
+            "карточка перерисовывается раньше, чем гаснет спиннер",
+        )
+
     async def test_an_unedittable_message_still_answers(self) -> None:
         # Telegram refuses to edit its own message after two days. A button on an old
         # report must still do something rather than raise and spin forever.
