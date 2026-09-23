@@ -6,6 +6,7 @@ Button captions are user-facing, so they stay in Russian.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 import asyncpg
 from aiogram.types import (
@@ -156,6 +157,18 @@ def tag_picker(
     )
     rows.append([InlineKeyboardButton(text="✅ Готово", callback_data=f"sp:{spend_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def duplicate_choice(spend_id: int, amount: Decimal) -> InlineKeyboardMarkup:
+    """Offered when the same amount arrives twice in a row: one of them, or both."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Она же", callback_data=f"sp:{spend_id}"),
+                InlineKeyboardButton(text="➕ Ещё одна такая", callback_data=f"dup:{amount}"),
+            ]
+        ]
+    )
 
 
 def confirm_delete(spend_id: int) -> InlineKeyboardMarkup:

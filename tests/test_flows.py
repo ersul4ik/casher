@@ -8,6 +8,7 @@ Requires TEST_DATABASE_URL, see test_integration.py.
 
 from __future__ import annotations
 
+import itertools
 import os
 import unittest
 from collections import Counter
@@ -40,6 +41,10 @@ CONFIG = Config(
     admin_ids=frozenset(),
     dedup_window_seconds=90,
 )
+
+# The dispatcher is shared by the whole module and remembers the update ids it has
+# already handled, so they have to keep climbing from test to test.
+UPDATE_IDS = itertools.count(1)
 
 CHAT = Chat(id=TG_ID, type="private")
 FROM = User(id=TG_ID, is_bot=False, first_name="Эрик")
@@ -115,14 +120,13 @@ class BotFlowTest(unittest.IsolatedAsyncioTestCase):
         await db.apply_schema(self.pool)
         self.bot = StubBot()
         self.dp = dispatcher_for(self.pool)
-        self.update_id = 0
 
     async def asyncTearDown(self) -> None:
         await self.bot.session.close()
         await self.pool.close()
 
     async def send(self, text: str) -> None:
-        self.update_id += 1
+        self.update_id = next(UPDATE_IDS)
         await self.dp.feed_update(
             self.bot,
             Update(
@@ -138,7 +142,7 @@ class BotFlowTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def tap(self, data: str) -> None:
-        self.update_id += 1
+        self.update_id = next(UPDATE_IDS)
         await self.dp.feed_update(
             self.bot,
             Update(
@@ -321,6 +325,54 @@ class BotFlowTest(unittest.IsolatedAsyncioTestCase):
                 "sp", "skip", "edit", "new", "note", "del", "delask", "delyes",
             },
         )
+
+    async def test_an_update_delivered_twice_happens_once(self) -> None:
+        # Telegram resends what it thinks was lost, which a waking instance invites.
+        update = Update(
+            update_id=next(UPDATE_IDS),
+            message=Message(
+                message_id=1,
+                date=datetime.now(timezone.utc),
+                chat=CHAT,
+                from_user=FROM,
+                text="1470",
+            ),
+        )
+        await self.dp.feed_update(self.bot, update)
+        await self.dp.feed_update(self.bot, update)
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM spends"), 1)
+
+    async def test_a_category_typed_out_is_not_turned_into_a_tag(self) -> None:
+        # What happens on a bad connection: the tap on Аптека seems to do nothing, so
+        # the name gets typed into the chat. It must file the spend, not tag it.
+        await self.send("222")
+        spend_id = await self.pool.fetchval("SELECT id FROM spends ORDER BY id DESC LIMIT 1")
+        category = (await db.list_categories(self.pool, await self.user_id()))[0]
+        await self.tap(f"cat:{spend_id}:{category['id']}")
+
+        await self.send(category["name"].lower())
+        self.assertEqual(await self.tags_of(spend_id), [])
+        self.assertEqual(
+            await self.pool.fetchval("SELECT category_id FROM spends WHERE id = $1", spend_id),
+            category["id"],
+        )
+
+        # Asked for tags outright, the same word is a tag again.
+        await self.tap(f"tgnew:{spend_id}")
+        await self.send(category["name"])
+        self.assertEqual(await self.tags_of(spend_id), [category["name"]])
+
+    async def test_the_same_amount_twice_asks_instead_of_doubling(self) -> None:
+        await self.send("340")
+        await self.send("340")
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM spends"), 1)
+        self.assertIn("уже записана", self.bot.last)
+
+        # Insisting works, and then there really are two.
+        await self.tap("dup:340.00")
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM spends"), 2)
+        amounts = await self.pool.fetch("SELECT amount FROM spends ORDER BY id")
+        self.assertEqual([str(row["amount"]) for row in amounts], ["340.00", "340.00"])
 
     async def test_the_spinner_stops_before_the_screen_is_redrawn(self) -> None:
         # The spinner on a tapped button is what reads as "the bot froze", and it stops

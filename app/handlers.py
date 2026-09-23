@@ -8,8 +8,10 @@ from __future__ import annotations
 import csv
 import html
 import io
+import logging
 import re
 from calendar import monthrange
+from collections import OrderedDict
 from contextlib import suppress
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -37,6 +39,7 @@ from .reports import (
     user_tz,
 )
 
+log = logging.getLogger("cacher.handlers")
 router = Router()
 
 MANUAL_SPEND_RE = re.compile(r"^\s*(\d+(?:[.,]\d{1,2})?)\s*(.*)$", re.DOTALL)
@@ -69,6 +72,37 @@ class Flow(StatesGroup):
     category_name = State()
     tag_names = State()
     note_text = State()
+
+
+class DropRepeatedUpdates(BaseMiddleware):
+    """Ignore an update Telegram has already delivered once.
+
+    Telegram waits for the webhook to answer and resends whatever it thinks was lost,
+    which a free instance waking up makes likely. Without this the same tap can set a
+    category twice or the same message can become two spends. Ids are kept in memory
+    only: a restart loses them, and re-running a handful of updates after a restart is
+    a far smaller problem than remembering them forever.
+    """
+
+    def __init__(self, remember: int = 1024) -> None:
+        self._seen: OrderedDict[int, None] = OrderedDict()
+        self._remember = remember
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        update_id = getattr(event, "update_id", None)
+        if update_id is not None:
+            if update_id in self._seen:
+                log.warning("Update %s arrived twice, ignoring the repeat", update_id)
+                return None
+            self._seen[update_id] = None
+            while len(self._seen) > self._remember:
+                self._seen.popitem(last=False)
+        return await handler(event, data)
 
 
 class CallbackSafetyNet(BaseMiddleware):
@@ -737,6 +771,22 @@ async def on_tag_names(
         await on_plain_text(msg, state, pool, user, config)
         return
 
+    # A name that is already one of their categories, typed at a card that has just
+    # asked about categories, means the category — it is what someone does when the tap
+    # on the button seems to have gone nowhere. Making a tag out of it leaves a "Аптека"
+    # tag on a spend filed under Аптека, which is nobody's intention.
+    if not data.get("tags_asked") and "," not in text:
+        category = await db.find_category(pool, user["id"], text)
+        if category is not None:
+            spend = await db.set_category(pool, user["id"], data["spend_id"], category["id"])
+            if spend is not None:
+                tags = await db.tags_for_spend(pool, spend["id"])
+                await msg.answer(
+                    f"{_spend_text(spend, tags, user)}\n\n{TAG_INPUT_HINT}",
+                    reply_markup=keyboards.spend_actions(spend["id"]),
+                )
+                return
+
     names = parse_tag_names(text)
     if not names:
         await msg.answer("Не разобрал теги. Пример: <code>вода, кофе</code>")
@@ -992,6 +1042,29 @@ async def cmd_stats(msg: Message, pool: asyncpg.Pool, config: Config) -> None:
 # --- manual entry ------------------------------------------------------------
 
 
+@router.callback_query(F.data.startswith("dup:"))
+async def cb_duplicate_anyway(
+    cb: CallbackQuery, pool: asyncpg.Pool, user: asyncpg.Record
+) -> None:
+    """They insist: the identical amount really was a second payment."""
+    try:
+        amount = Decimal(cb.data.split(":", 1)[1])
+    except InvalidOperation:
+        await cb.answer("Не разобрал сумму", show_alert=True)
+        return
+    await cb.answer("Записал отдельно")
+    spend = await db.create_spend(
+        pool,
+        user_id=user["id"],
+        amount=amount,
+        currency=user["currency"],
+        raw=None,
+        source="manual",
+    )
+    await _safe_edit(cb, f"➕ Записал отдельно: <b>{money(amount)} {user['currency']}</b>")
+    await notifier.ask_category(cb.bot, pool, user, spend)
+
+
 @router.callback_query(F.data == "noop")
 async def cb_noop(cb: CallbackQuery) -> None:
     await cb.answer()
@@ -1017,6 +1090,22 @@ async def on_plain_text(
         return
     if amount <= 0:
         await msg.answer("Сумма должна быть больше нуля.")
+        return
+
+    # The same amount a moment ago is far more often a message sent twice on a bad
+    # connection than two identical payments. Pushes are deduplicated silently, but a
+    # person is owed an explanation and a way to insist — hence the button.
+    twin = await db.find_recent_duplicate(
+        pool, user["id"], amount, user["currency"], config.dedup_window_seconds
+    )
+    if twin is not None:
+        await state.clear()
+        stored = await db.get_spend(pool, user["id"], twin["id"])
+        await msg.answer(
+            f"{_spend_text(stored, [], user)}\n\n"
+            f"Такая трата уже записана минуту назад — это она и есть?",
+            reply_markup=keyboards.duplicate_choice(twin["id"], amount),
+        )
         return
 
     hint = match.group(2).strip()

@@ -99,6 +99,11 @@ tag may start with a digit there. A command or a menu tap ends the listening.
 
 The same card opens for any past spend: `/last`, then tap its number.
 
+Typing a name the user already has as a **category** files the spend under it instead of tagging
+it — on a slow connection a tap that seems to have gone nowhere gets typed out by hand, and a
+spend filed under Аптека does not also need a tag saying Аптека. After the explicit ➕ Новые теги
+button the same word is a tag again, because there it was asked for.
+
 Every report has a **🏷 По тегам** button — the same period broken down by tag instead of
 category. A spend carrying several tags counts towards each of them, so the tag totals can exceed
 the overall total; the report says so outright.

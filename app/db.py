@@ -160,6 +160,20 @@ async def list_categories(pool: asyncpg.Pool, user_id: int) -> list[asyncpg.Reco
     )
 
 
+async def find_category(
+    pool: asyncpg.Pool, user_id: int, name: str
+) -> asyncpg.Record | None:
+    """Look a category up by the name as typed, ignoring case."""
+    return await pool.fetchrow(
+        """
+        SELECT id, name FROM categories
+         WHERE user_id = $1 AND lower(name) = lower($2) AND NOT is_archived
+        """,
+        user_id,
+        name,
+    )
+
+
 async def add_category(pool: asyncpg.Pool, user_id: int, name: str) -> asyncpg.Record:
     """Create a category, or return an existing one with the same name, unarchiving it."""
     return await pool.fetchrow(

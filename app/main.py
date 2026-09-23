@@ -19,7 +19,7 @@ from aiohttp import web
 
 from . import db, webapi
 from .config import Config, load_config
-from .handlers import CallbackSafetyNet, UserMiddleware, router
+from .handlers import CallbackSafetyNet, DropRepeatedUpdates, UserMiddleware, router
 
 log = logging.getLogger("cacher")
 
@@ -42,6 +42,8 @@ def build_dispatcher(pool, config: Config) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
     dp["pool"] = pool
     dp["config"] = config
+    # Before anything else: a repeat delivery must not reach a handler at all.
+    dp.update.outer_middleware(DropRepeatedUpdates())
     dp.message.outer_middleware(UserMiddleware())
     # Outermost, so a button also stops spinning when the failure is in the middleware
     # below it — an unreachable database, say.
